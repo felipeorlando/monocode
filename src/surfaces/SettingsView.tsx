@@ -427,7 +427,7 @@ function GeneralPage({
       </Row>
       <Row
         label="Anchor prompts to top"
-        description="When you send, the new prompt sits at the top of the transcript and the reply grows into the space below. Turn this off to keep the classic layout, with the latest message resting on the composer."
+        description="When you send, the new prompt sits at the top of the transcript and stays pinned there while you read the reply scrolling underneath, until the next prompt takes its place. Turn this off to keep the classic layout, with the latest message resting on the composer."
       >
         <Toggle
           label="Anchor prompts to top"
