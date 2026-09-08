@@ -7,6 +7,7 @@ import {
   formatUsagePercent,
   formatWindowLabel,
   idleRateLimits,
+  isRateLimitProvider,
   isRateLimitSnapshotStale,
   mapUsageWindow,
   parseClaudeOAuthUsage,
@@ -16,6 +17,7 @@ import {
   rateLimitWindowTooltip,
   shouldFetchProvider,
   shouldFetchRateLimits,
+  usageFooterProviders,
 } from "./rateLimits";
 
 describe("formatWindowLabel", () => {
@@ -309,5 +311,56 @@ describe("shouldFetchRateLimits", () => {
     expect(
       shouldFetchProvider(disconnected, { force: true, visible: true, now }),
     ).toBe(true);
+  });
+});
+
+describe("usageFooterProviders", () => {
+  it("mirrors the active session by default", () => {
+    expect(
+      usageFooterProviders({ activeHarness: "claude", alwaysShow: false }),
+    ).toEqual(["claude"]);
+    expect(
+      usageFooterProviders({ activeHarness: "codex", alwaysShow: false }),
+    ).toEqual(["codex"]);
+  });
+
+  it("shows nothing by default for a provider without usage data", () => {
+    expect(
+      usageFooterProviders({ activeHarness: "cursor", alwaysShow: false }),
+    ).toEqual([]);
+    expect(
+      usageFooterProviders({ activeHarness: undefined, alwaysShow: false }),
+    ).toEqual([]);
+    expect(
+      usageFooterProviders({ activeHarness: null, alwaysShow: false }),
+    ).toEqual([]);
+  });
+
+  it("pins the full roster once the setting is on", () => {
+    expect(
+      usageFooterProviders({ activeHarness: "cursor", alwaysShow: true }),
+    ).toEqual(["claude", "codex"]);
+    expect(
+      usageFooterProviders({ activeHarness: "claude", alwaysShow: true }),
+    ).toEqual(["claude", "codex"]);
+    expect(
+      usageFooterProviders({ activeHarness: undefined, alwaysShow: true }),
+    ).toEqual(["claude", "codex"]);
+  });
+
+  it("hands back a fresh array so callers cannot mutate the roster", () => {
+    const first = usageFooterProviders({ alwaysShow: true });
+    first.pop();
+    expect(usageFooterProviders({ alwaysShow: true })).toEqual([
+      "claude",
+      "codex",
+    ]);
+  });
+
+  it("recognises only the providers we can actually poll", () => {
+    expect(isRateLimitProvider("claude")).toBe(true);
+    expect(isRateLimitProvider("codex")).toBe(true);
+    expect(isRateLimitProvider("cursor")).toBe(false);
+    expect(isRateLimitProvider(undefined)).toBe(false);
   });
 });

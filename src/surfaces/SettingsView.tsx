@@ -146,6 +146,7 @@ import { loadTabGroupLabels, resolveTabGroupLabel } from "../lib/tabGroups";
 import {
   filterKeybindings,
   KEYBINDINGS,
+  loadAlwaysShowUsage,
   loadClaudeHooks,
   loadComposerRunner,
   loadDiffViewer,
@@ -153,6 +154,7 @@ import {
   loadGridArcadeEnabled,
   loadLiveAgentsEnabled,
   loadNotesEnabled,
+  saveAlwaysShowUsage,
   saveClaudeHooks,
   saveComposerRunner,
   saveDiffViewer,
@@ -322,6 +324,7 @@ function GeneralPage({
   const [notificationPermission, setNotificationPermission] =
     useState<NotificationPermission>(cachedNotificationPermission);
   const [claudeHooks, setClaudeHooks] = useState(loadClaudeHooks);
+  const [alwaysShowUsage, setAlwaysShowUsage] = useState(loadAlwaysShowUsage);
 
   // The user may flip the switch in System Settings and come back: re-read
   // the OS state whenever the window regains focus while the toggle is on.
@@ -383,6 +386,11 @@ function GeneralPage({
   const onLiveAgentsEnabled = (next: boolean) => {
     saveLiveAgentsEnabled(next);
     setLiveAgentsEnabled(next);
+  };
+
+  const onAlwaysShowUsage = (next: boolean) => {
+    saveAlwaysShowUsage(next);
+    setAlwaysShowUsage(next);
   };
 
   const onSoundsEnabled = (next: boolean) => {
@@ -490,6 +498,16 @@ function GeneralPage({
           label="Working agents"
           on={liveAgentsEnabled}
           onChange={onLiveAgentsEnabled}
+        />
+      </Row>
+      <Row
+        label="Always show provider usage"
+        description="The usage bar at the bottom follows the active session, so switching to a provider MonoCode cannot read usage for empties it. Turn this on to keep the Claude Code and Codex chips pinned no matter which provider is running."
+      >
+        <Toggle
+          label="Always show provider usage"
+          on={alwaysShowUsage}
+          onChange={onAlwaysShowUsage}
         />
       </Row>
       <Row

@@ -12,6 +12,7 @@ import {
   formatRateLimitWindowChipLabel,
   formatUsagePercent,
   idleRateLimits,
+  isRateLimitProvider,
   RATE_LIMIT_POLL_MS,
   rateLimitWindowTooltip,
   shouldFetchProvider,
@@ -117,6 +118,15 @@ export function UsageFooter({
   }, []);
 
   const showUsage = wantClaude || wantCodex;
+  // The session chip is the fallback when no usage chip covers the active
+  // provider. With the roster pinned it sits alongside the usage chips, so a
+  // Cursor session still says "cursor" instead of vanishing behind them.
+  const showSession =
+    session != null &&
+    !(
+      isRateLimitProvider(session.harness) &&
+      providers.includes(session.harness)
+    );
   const showTerminals = terminals.length > 0;
   const showRight = showUsage || showTerminals;
   const ariaLabel = showUsage
@@ -132,14 +142,9 @@ export function UsageFooter({
       aria-label={ariaLabel}
       className="flex h-7 shrink-0 items-center gap-3 overflow-x-auto border-t border-content/10 px-3 text-[11px] text-content/55"
     >
-      {showUsage ? (
-        <>
-          {wantClaude ? <ProviderChip limits={claude} now={now} /> : null}
-          {wantCodex ? <ProviderChip limits={codex} now={now} /> : null}
-        </>
-      ) : session ? (
-        <SessionChip session={session} />
-      ) : null}
+      {showSession && session ? <SessionChip session={session} /> : null}
+      {wantClaude ? <ProviderChip limits={claude} now={now} /> : null}
+      {wantCodex ? <ProviderChip limits={codex} now={now} /> : null}
       {showRight ? (
         <div className="ml-auto flex shrink-0 items-center gap-2">
           {showTerminals ? (

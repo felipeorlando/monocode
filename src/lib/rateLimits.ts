@@ -2,6 +2,33 @@ import { asRecord } from "./harness/codexProtocol";
 
 export type RateLimitProvider = "claude" | "codex";
 
+/**
+ * Every provider that reports usage from a supported source: Claude Code over
+ * its OAuth usage endpoint, Codex over `account/rateLimits/read`. Ordered the
+ * way the footer renders them.
+ */
+export const RATE_LIMIT_PROVIDERS: RateLimitProvider[] = ["claude", "codex"];
+
+export function isRateLimitProvider(
+  value: unknown,
+): value is RateLimitProvider {
+  return value === "claude" || value === "codex";
+}
+
+/**
+ * Which chips the usage footer renders. By default the footer mirrors the
+ * active session, so it goes quiet the moment you switch to a provider we
+ * cannot report usage for. `alwaysShow` pins the whole roster instead, so a
+ * Cursor (or any other) session no longer hides Claude and Codex.
+ */
+export function usageFooterProviders(input: {
+  activeHarness?: string | null;
+  alwaysShow: boolean;
+}): RateLimitProvider[] {
+  if (input.alwaysShow) return [...RATE_LIMIT_PROVIDERS];
+  return isRateLimitProvider(input.activeHarness) ? [input.activeHarness] : [];
+}
+
 export type RateLimitStatus =
   "idle" | "fetching" | "ok" | "error" | "unavailable";
 
