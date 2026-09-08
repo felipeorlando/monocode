@@ -120,7 +120,15 @@ html.has-native-glass .sidebar-glass {
   background: var(--color-background-base);
 }
 
-.transcript-turn {
+/*
+ * The turn wrapper is the sticky prompt's travel track, so it has to stay free
+ * of containment: content-visibility implies paint containment, and a sticky
+ * child of a painted box sticks to that box instead of the scroller — a no-op.
+ * Virtualization lives on the body, which holds everything under the prompt.
+ * The 240px fallback now estimates the body alone; the prompt is short text
+ * that measures itself.
+ */
+.transcript-turn-body {
   content-visibility: auto;
   contain-intrinsic-block-size: auto 240px;
 }
@@ -130,8 +138,17 @@ html.has-native-glass .sidebar-glass {
  * intrinsic fallback when the first step arrives, which bounces Working
  * down and then back up.
  */
-.transcript-turn-live {
+.transcript-turn-live .transcript-turn-body {
   content-visibility: visible;
+}
+
+/*
+ * A pinned prompt has its own reply scrolling underneath it, so the bar it
+ * turns into must be opaque — the bubble's bg-content/10 is a tint and the
+ * text below would read straight through it.
+ */
+.transcript-prompt-stuck {
+  background: var(--color-background-base);
 }
 
 /*

@@ -416,7 +416,9 @@ function AgentTranscriptComponent({
                 key={item.block.id}
                 block={item.block}
                 layout={transcriptLayout}
-                stickyIndex={firstVisibleTurn + turnIndex + 1}
+                // A prompt only reports itself pinned while it can be pinned,
+                // and it watches the scroller it is pinned to.
+                scroller={promptAnchor ? scrollerEl : null}
                 // Prose reads the same wherever it lands: under the fold
                 // line at the top of the turn, or under the work it follows.
                 underLine={
@@ -449,6 +451,14 @@ function AgentTranscriptComponent({
               />
             </TurnRow>
           );
+          // groupTurns opens a turn at its prompt, so the user message is
+          // always the first item. It is rendered outside the turn body: the
+          // body is the contained, virtualized block, and a sticky row inside
+          // it would stick to the body rather than to the scroller.
+          const promptItem =
+            items[0]?.type === "block" && items[0].block.role === "user"
+              ? items[0]
+              : undefined;
           return (
             <div
               key={turn[0].id}
@@ -460,66 +470,88 @@ function AgentTranscriptComponent({
                   : ""
               }`}
             >
-              {items.flatMap((item, itemIndex) => {
-                const inFold =
-                  !!fold && itemIndex >= fold.start && itemIndex <= fold.end;
-                if (inFold) {
-                  if (itemIndex !== fold.start) return [];
-                  return [
-                    foldLineRow,
-                    <TurnRow key="work-details" folded={!workOpen}>
-                      {() =>
-                        items
-                          .slice(fold.start, fold.end + 1)
-                          .map((entry, offset) => (
-                            <div
-                              key={turnItemKey(entry)}
-                              className={`flow-root pb-1 last:pb-0 pl-5 zen-fold-rail ${
-                                fold.start + offset === fold.end
-                                  ? "zen-fold-tail"
-                                  : ""
-                              }`}
-                            >
-                              {renderItem(entry, fold.start + offset)}
-                            </div>
-                          ))
-                      }
-                    </TurnRow>,
-                  ];
-                }
-                const row = (
-                  <div key={turnItemKey(item)} className="flow-root pb-1">
-                    {renderItem(item, itemIndex)}
-                  </div>
-                );
-                if (itemIndex !== foldLineAt) return row;
-                return [foldLineRow, row];
-              })}
-              {foldLineAt >= items.length ? foldLineRow : null}
-              {durationMs != null && settled ? (
-                <TurnDuration
-                  elapsedMs={durationMs}
-                  labelHidden={showFoldLine}
-                  modelName={modelName}
-                  completedAt={
-                    startedAt != null ? startedAt + durationMs : undefined
-                  }
-                  copyText={turnCopyText(turn)}
-                  onSaveNote={onSaveNote}
-                  harness={turnHarness}
-                  fromHarness={turnHarness}
-                  onSecondOpinion={
-                    onSecondOpinion
-                      ? (target, model) => onSecondOpinion(target, turn, model)
+              {promptItem ? (
+                // Pinned, the prompt travels the whole height of its turn and
+                // the next turn's prompt pushes it out. The ascending z-index
+                // keeps the arriving prompt above the leaving one during that
+                // handoff.
+                <div
+                  className={`flow-root pb-1${
+                    promptAnchor ? " sticky top-0" : ""
+                  }`}
+                  style={
+                    promptAnchor
+                      ? { zIndex: firstVisibleTurn + turnIndex + 1 }
                       : undefined
                   }
-                  onHandoff={
-                    onHandoff
-                      ? (target, model) => onHandoff(target, turn, model)
-                      : undefined
-                  }
-                />
+                >
+                  {renderItem(promptItem, 0)}
+                </div>
               ) : null}
+              <div className="transcript-turn-body flex min-w-0 flex-col">
+                {items.flatMap((item, itemIndex) => {
+                  if (item === promptItem) return [];
+                  const inFold =
+                    !!fold && itemIndex >= fold.start && itemIndex <= fold.end;
+                  if (inFold) {
+                    if (itemIndex !== fold.start) return [];
+                    return [
+                      foldLineRow,
+                      <TurnRow key="work-details" folded={!workOpen}>
+                        {() =>
+                          items
+                            .slice(fold.start, fold.end + 1)
+                            .map((entry, offset) => (
+                              <div
+                                key={turnItemKey(entry)}
+                                className={`flow-root pb-1 last:pb-0 pl-5 zen-fold-rail ${
+                                  fold.start + offset === fold.end
+                                    ? "zen-fold-tail"
+                                    : ""
+                                }`}
+                              >
+                                {renderItem(entry, fold.start + offset)}
+                              </div>
+                            ))
+                        }
+                      </TurnRow>,
+                    ];
+                  }
+                  const row = (
+                    <div key={turnItemKey(item)} className="flow-root pb-1">
+                      {renderItem(item, itemIndex)}
+                    </div>
+                  );
+                  if (itemIndex !== foldLineAt) return row;
+                  return [foldLineRow, row];
+                })}
+                {foldLineAt >= items.length ? foldLineRow : null}
+                {durationMs != null && settled ? (
+                  <TurnDuration
+                    elapsedMs={durationMs}
+                    labelHidden={showFoldLine}
+                    modelName={modelName}
+                    completedAt={
+                      startedAt != null ? startedAt + durationMs : undefined
+                    }
+                    copyText={turnCopyText(turn)}
+                    onSaveNote={onSaveNote}
+                    harness={turnHarness}
+                    fromHarness={turnHarness}
+                    onSecondOpinion={
+                      onSecondOpinion
+                        ? (target, model) =>
+                            onSecondOpinion(target, turn, model)
+                        : undefined
+                    }
+                    onHandoff={
+                      onHandoff
+                        ? (target, model) => onHandoff(target, turn, model)
+                        : undefined
+                    }
+                  />
+                ) : null}
+              </div>
             </div>
           );
         })}
@@ -755,7 +787,7 @@ function SaveNoteButton({
 const TranscriptBlock = memo(function TranscriptBlock({
   block,
   layout,
-  stickyIndex,
+  scroller,
   underLine = false,
   cwd,
   onApproval,
@@ -769,7 +801,8 @@ const TranscriptBlock = memo(function TranscriptBlock({
 }: {
   block: Block;
   layout: TranscriptLayout;
-  stickyIndex: number;
+  /** The transcript scroller a pinned prompt reports against, or null. */
+  scroller: HTMLElement | null;
   /** True when something already sits directly above this in the turn. */
   underLine?: boolean;
   cwd?: string;
@@ -784,11 +817,7 @@ const TranscriptBlock = memo(function TranscriptBlock({
 }) {
   if (block.role === "user") {
     return (
-      <UserMessageBlock
-        block={block}
-        layout={layout}
-        stickyIndex={stickyIndex}
-      />
+      <UserMessageBlock block={block} layout={layout} scroller={scroller} />
     );
   }
 
@@ -893,16 +922,18 @@ const TranscriptBlock = memo(function TranscriptBlock({
 function UserMessageBlock({
   block,
   layout,
-  stickyIndex,
+  scroller,
 }: {
   block: Block;
   layout: TranscriptLayout;
-  stickyIndex: number;
+  scroller: HTMLElement | null;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [overflows, setOverflows] = useState(false);
   const [singleLine, setSingleLine] = useState(false);
+  const [stuck, setStuck] = useState(false);
   const textRef = useRef<HTMLPreElement>(null);
+  const rowRef = useRef<HTMLDivElement>(null);
   const card = block.secondOpinion;
   const note = block.noteCard;
   const text = card && card.kind !== "handoff" ? "" : block.text;
@@ -950,15 +981,46 @@ function UserMessageBlock({
     return () => observer.disconnect();
   }, [text, roundsSingleLine, expanded]);
 
+  // WKWebView has neither `:stuck` nor scroll-state container queries, so the
+  // pinned state is observed instead: inset the scroller's top edge by a pixel
+  // and a prompt resting on it stops being fully visible. One observer per user
+  // message, the same cost as the resize observer above.
+  useEffect(() => {
+    const el = rowRef.current;
+    if (!scroller || !el) {
+      setStuck(false);
+      return;
+    }
+    const observer = new IntersectionObserver(
+      ([entry]) =>
+        // Leaving through the bottom of the viewport is the same "not fully
+        // visible" report, so pinned is the case where the message has left
+        // through the top: its own top sits at or above the inset edge.
+        setStuck(
+          !entry.isIntersecting &&
+            entry.boundingClientRect.top <= (entry.rootBounds?.top ?? 0),
+        ),
+      { root: scroller, rootMargin: "-1px 0px 0px 0px", threshold: 1 },
+    );
+    observer.observe(el);
+    return () => {
+      observer.disconnect();
+      setStuck(false);
+    };
+  }, [scroller]);
+
   const toggle = () => {
     if (overflows) setExpanded((value) => !value);
   };
 
   return (
     <div
-      className={
+      ref={rowRef}
+      // Pinned, the message is a context bar: one opaque line reminding you
+      // what you asked, over its own reply scrolling past underneath.
+      className={`${
         chat ? "flex justify-end pt-1.5 pr-4 pb-4 pl-14" : "p-1.5 pb-3"
-      }
+      }${stuck ? " transcript-prompt-stuck border-b border-content/10" : ""}`}
     >
       <div
         className={`min-w-0 bg-content/10 px-3 py-2 font-sans text-content ${
@@ -966,7 +1028,6 @@ function UserMessageBlock({
             ? `w-fit max-w-xl ${singleLine ? "rounded-full" : "rounded-xl"}`
             : "rounded-lg border border-content/10"
         }`}
-        style={{ zIndex: stickyIndex }}
         onClick={overflows ? toggle : undefined}
       >
         {block.attachments?.length ? (
@@ -991,7 +1052,12 @@ function UserMessageBlock({
         {text ? (
           <pre
             ref={textRef}
-            className={`min-w-0 whitespace-pre-wrap break-words font-sans text-sm ${expanded ? "" : "line-clamp-4"}`}
+            // A pinned prompt clamps to one line even when it was expanded:
+            // the bar is a reminder, and the reader opened it to read it in
+            // place, not to have it eat the top of the transcript.
+            className={`min-w-0 whitespace-pre-wrap break-words font-sans text-sm ${
+              stuck ? "line-clamp-1" : expanded ? "" : "line-clamp-4"
+            }`}
           >
             {text}
           </pre>
