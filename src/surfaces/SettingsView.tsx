@@ -502,7 +502,7 @@ function GeneralPage({
       </Row>
       <Row
         label="Always show provider usage"
-        description="The usage bar at the bottom follows the active session, so switching to a provider MonoCode cannot read usage for empties it. Turn this on to keep the Claude Code and Codex chips pinned no matter which provider is running."
+        description="The usage bar at the bottom follows the active session, so switching to a provider MonoCode cannot read usage for empties it. Turn this on to keep the Claude Code, Codex, Cursor, and Grok chips pinned no matter which provider is running."
       >
         <Toggle
           label="Always show provider usage"

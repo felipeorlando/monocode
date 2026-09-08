@@ -4,6 +4,8 @@ import {
   errorRateLimits,
   parseClaudeOAuthUsage,
   parseCodexRateLimits,
+  parseCursorUsageSummary,
+  parseGrokBilling,
   unavailableRateLimits,
   type ProviderRateLimits,
 } from "./rateLimits";
@@ -21,7 +23,7 @@ const USAGE_CHILD_ID = "monocode-codex-usage";
 const DISCOVERY_TIMEOUT_MS = 15_000;
 const REQUEST_TIMEOUT_MS = 12_000;
 
-type ClaudeUsageFetch = {
+type UsageFetch = {
   status: "ok" | "error" | "unavailable" | string;
   httpStatus?: number | null;
   body?: string | null;
@@ -30,7 +32,7 @@ type ClaudeUsageFetch = {
 
 export async function fetchClaudeRateLimits(): Promise<ProviderRateLimits> {
   try {
-    const result = await invoke<ClaudeUsageFetch>("fetch_claude_usage");
+    const result = await invoke<UsageFetch>("fetch_claude_usage");
     if (result.status === "ok" && result.body) {
       const parsed = parseClaudeOAuthUsage(result.body);
       if (parsed.session || parsed.weekly) return parsed;
@@ -53,6 +55,64 @@ export async function fetchClaudeRateLimits(): Promise<ProviderRateLimits> {
     return errorRateLimits(
       "claude",
       error instanceof Error ? error.message : "Claude usage unavailable",
+    );
+  }
+}
+
+export async function fetchCursorRateLimits(): Promise<ProviderRateLimits> {
+  try {
+    const result = await invoke<UsageFetch>("fetch_cursor_usage");
+    if (result.status === "ok" && result.body) {
+      const parsed = parseCursorUsageSummary(result.body);
+      if (parsed.session || parsed.weekly) return parsed;
+      return {
+        ...parsed,
+        status: parsed.status === "ok" ? "ok" : parsed.status,
+      };
+    }
+    if (result.status === "unavailable") {
+      return unavailableRateLimits(
+        "cursor",
+        result.error?.trim() || "Cursor not signed in",
+      );
+    }
+    return errorRateLimits(
+      "cursor",
+      result.error?.trim() || "Cursor usage unavailable",
+    );
+  } catch (error) {
+    return errorRateLimits(
+      "cursor",
+      error instanceof Error ? error.message : "Cursor usage unavailable",
+    );
+  }
+}
+
+export async function fetchGrokRateLimits(): Promise<ProviderRateLimits> {
+  try {
+    const result = await invoke<UsageFetch>("fetch_grok_usage");
+    if (result.status === "ok" && result.body) {
+      const parsed = parseGrokBilling(result.body);
+      if (parsed.session || parsed.weekly) return parsed;
+      return {
+        ...parsed,
+        status: parsed.status === "ok" ? "ok" : parsed.status,
+      };
+    }
+    if (result.status === "unavailable") {
+      return unavailableRateLimits(
+        "grok",
+        result.error?.trim() || "Grok not signed in",
+      );
+    }
+    return errorRateLimits(
+      "grok",
+      result.error?.trim() || "Grok usage unavailable",
+    );
+  } catch (error) {
+    return errorRateLimits(
+      "grok",
+      error instanceof Error ? error.message : "Grok usage unavailable",
     );
   }
 }
