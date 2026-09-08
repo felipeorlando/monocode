@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- New sessions in a git repository choose where they run: the main checkout, an existing linked worktree, or a worktree created on the spot from a branch name and a start-from ref. The choice is explicit, made before the first turn, and never moves the main checkout's branch — a failed create leaves it exactly as it was. In #2.
+
+### Changed
+
+- A session stays in the checkout it was started in across restarts, and only falls back to the main checkout when that worktree is really gone.
+- The composer branch picker switches the branch of the working copy its session runs in, so a worktree session no longer moves the main checkout.
+
 ## [0.1.37] - 2026-09-07
 
 ### Fixed

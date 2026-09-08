@@ -738,6 +738,73 @@ pub async fn git_stash(cwd: String, message: Option<String>) -> Result<(), Strin
     .map_err(|e| e.to_string())?
 }
 
+#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct GitWorktreeEntry {
+    /// Absolute path of this working tree.
+    pub path: String,
+    /// Short branch checked out here. Absent while the tree is detached.
+    pub branch: Option<String>,
+    /// The repository's primary working tree, the one `git clone` produced.
+    pub main: bool,
+    /// Still registered, but its directory is gone from disk.
+    pub prunable: bool,
+    /// Held by `git worktree lock`.
+    pub locked: bool,
+}
+
+#[derive(Serialize, Clone, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct GitWorktrees {
+    /// Main checkout first, then linked worktrees. Empty outside a repository.
+    pub entries: Vec<GitWorktreeEntry>,
+    /// Folder `git_worktree_create` puts new worktrees in, so the picker can
+    /// show where a new one would land before the user commits to it.
+    pub parent: Option<String>,
+}
+
+/// Working trees of this repository: the main checkout plus every linked worktree.
+#[tauri::command]
+pub async fn git_worktrees(cwd: String) -> Result<GitWorktrees, String> {
+    tauri::async_runtime::spawn_blocking(move || Ok(git_worktrees_for(&expand_home(&cwd))))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// Create a linked worktree on a new branch and report where it landed.
+///
+/// `git worktree add` writes a new directory and one ref; it never moves the
+/// main checkout's HEAD, so a failure here leaves the caller's checkout exactly
+/// as it was and the error travels back to the picker untouched.
+#[tauri::command]
+pub async fn git_worktree_create(
+    cwd: String,
+    branch: String,
+    start_ref: Option<String>,
+) -> Result<GitWorktreeEntry, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        git_worktree_create_for(&expand_home(&cwd), &branch, start_ref.as_deref())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// True when `path` is still a live working tree of the repository at `cwd`.
+///
+/// Sessions persist the checkout they were started in, so a restore has to tell
+/// "the worktree is still there" from "someone removed it while we were away".
+#[tauri::command]
+pub async fn git_worktree_verify(cwd: String, path: String) -> Result<bool, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        Ok(git_worktree_verify_for(
+            &expand_home(&cwd),
+            &expand_home(&path),
+        ))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 fn git_diff_stats_for(root: &Path) -> GitDiffStats {
     if !git_is_work_tree(root) {
         return GitDiffStats::default();
@@ -2754,6 +2821,215 @@ fn git_create_branch_for(root: &Path, name: &str) -> Result<String, String> {
     }
     git_switch(root, &["checkout", "-b", &name])?;
     Ok(name)
+}
+
+/// One `worktree ...` block of `git worktree list --porcelain`.
+struct GitWorktreeBlock {
+    path: PathBuf,
+    branch: Option<String>,
+    /// A bare repository entry: registered, but with no files to work in.
+    bare: bool,
+    prunable: bool,
+    locked: bool,
+}
+
+fn git_worktrees_for(root: &Path) -> GitWorktrees {
+    let Some(blocks) = git_worktree_blocks(root) else {
+        return GitWorktrees::default();
+    };
+    // `git worktree list` always prints the primary working tree first, from
+    // whichever tree the command ran in, so position identifies the main
+    // checkout without a second `rev-parse`.
+    let parent = blocks
+        .first()
+        .and_then(|block| git_worktree_parent(&block.path));
+    let entries = blocks
+        .into_iter()
+        .enumerate()
+        // A bare entry has no files, so it can never host a session.
+        .filter(|(_, block)| !block.bare)
+        .map(|(index, block)| GitWorktreeEntry {
+            path: path_to_js(&block.path),
+            branch: block.branch,
+            main: index == 0,
+            prunable: block.prunable,
+            locked: block.locked,
+        })
+        .collect();
+    GitWorktrees {
+        entries,
+        parent: parent.as_deref().map(path_to_js),
+    }
+}
+
+fn git_worktree_blocks(root: &Path) -> Option<Vec<GitWorktreeBlock>> {
+    if !git_is_work_tree(root) {
+        return None;
+    }
+    let text = git_run(root, &["worktree", "list", "--porcelain"])?;
+    let mut blocks = Vec::new();
+    let mut current: Option<GitWorktreeBlock> = None;
+    for line in text.lines() {
+        let line = line.trim_end();
+        if let Some(rest) = line.strip_prefix("worktree ") {
+            if let Some(block) = current.take() {
+                blocks.push(block);
+            }
+            current = Some(GitWorktreeBlock {
+                path: PathBuf::from(rest),
+                branch: None,
+                bare: false,
+                prunable: false,
+                locked: false,
+            });
+            continue;
+        }
+        let Some(block) = current.as_mut() else {
+            continue;
+        };
+        if let Some(rest) = line.strip_prefix("branch ") {
+            block.branch = Some(rest.strip_prefix("refs/heads/").unwrap_or(rest).to_string());
+        } else if line == "bare" {
+            block.bare = true;
+        } else if line == "locked" || line.starts_with("locked ") {
+            // `locked` may carry a reason; only the presence of the key matters.
+            block.locked = true;
+        } else if line == "prunable" || line.starts_with("prunable ") {
+            block.prunable = true;
+        }
+    }
+    if let Some(block) = current.take() {
+        blocks.push(block);
+    }
+    Some(blocks)
+}
+
+/// Folder new worktrees are created in: a `<repo>-worktrees` sibling of the main
+/// checkout. Outside the repository, so linked trees never show up as untracked
+/// files, and next to it, so they are easy to find in a file browser.
+fn git_worktree_parent(main: &Path) -> Option<PathBuf> {
+    let name = main.file_name()?.to_string_lossy().into_owned();
+    Some(main.parent()?.join(format!("{name}-worktrees")))
+}
+
+fn git_worktree_create_for(
+    root: &Path,
+    branch: &str,
+    start_ref: Option<&str>,
+) -> Result<GitWorktreeEntry, String> {
+    if !git_is_work_tree(root) {
+        return Err("Not a git repository".into());
+    }
+    let branch = git_branch_name(root, branch)?;
+    if git_ref_exists(root, &format!("refs/heads/{branch}"))
+        || git_head_branch(root).as_deref() == Some(branch.as_str())
+    {
+        return Err(format!("Branch {branch} already exists"));
+    }
+    // An empty start point means "branch from where this checkout is now".
+    let start = start_ref
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("HEAD");
+    // Resolve the start point up front so a typo fails before any directory
+    // exists, rather than half way through `git worktree add`.
+    if start.starts_with('-') || git_worktree_start_commit(root, start).is_none() {
+        return Err(format!("Start point {start} not found"));
+    }
+    let main = git_worktree_blocks(root)
+        .and_then(|blocks| blocks.into_iter().next())
+        .map(|block| block.path)
+        .unwrap_or_else(|| root.to_path_buf());
+    let path = git_worktree_target(&main, &branch)?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    // Only the leaf directory is left to git, which removes it again if the add
+    // fails, so a failed create leaves nothing behind to clean up by hand.
+    let path_arg = path.to_string_lossy().into_owned();
+    git_checked(root, &["worktree", "add", "-b", &branch, &path_arg, start])?;
+    Ok(GitWorktreeEntry {
+        path: path_to_js(&path.canonicalize().unwrap_or(path)),
+        branch: Some(branch),
+        main: false,
+        prunable: false,
+        locked: false,
+    })
+}
+
+fn git_worktree_start_commit(root: &Path, spec: &str) -> Option<String> {
+    git_stdout(
+        root,
+        &[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("{spec}^{{commit}}"),
+        ],
+    )
+}
+
+/// Free directory for a new worktree under the repository's worktree parent.
+fn git_worktree_target(main: &Path, branch: &str) -> Result<PathBuf, String> {
+    let parent = git_worktree_parent(main)
+        .ok_or_else(|| "Could not place a worktree next to this repository".to_string())?;
+    let slug = git_worktree_slug(branch);
+    let first = parent.join(&slug);
+    if !first.exists() {
+        return Ok(first);
+    }
+    for index in 2..64 {
+        let candidate = parent.join(format!("{slug}-{index}"));
+        if !candidate.exists() {
+            return Ok(candidate);
+        }
+    }
+    Err(format!("Could not allocate a worktree folder for {branch}"))
+}
+
+/// Branch names may nest (`feat/thing`) or carry characters that make awkward
+/// folder names, so flatten them into one plain segment.
+fn git_worktree_slug(branch: &str) -> String {
+    let mut slug = String::with_capacity(branch.len());
+    for ch in branch.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+            slug.push(ch);
+        } else if !slug.ends_with('-') {
+            slug.push('-');
+        }
+    }
+    let trimmed = slug.trim_matches('-');
+    if trimmed.is_empty() {
+        "worktree".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn git_worktree_verify_for(root: &Path, path: &Path) -> bool {
+    if !path.is_dir() || !git_is_work_tree(path) {
+        return false;
+    }
+    // Every working tree of one repository shares a single common dir, so
+    // comparing it also rejects a folder that survived as an unrelated repo.
+    match (git_common_dir(root), git_common_dir(path)) {
+        (Some(a), Some(b)) => match (a.canonicalize(), b.canonicalize()) {
+            (Ok(a), Ok(b)) => a == b,
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
+/// Shared `.git` directory, identical from every working tree of a repository.
+fn git_common_dir(root: &Path) -> Option<PathBuf> {
+    let raw = git_stdout(root, &["rev-parse", "--git-common-dir"])?;
+    let path = PathBuf::from(raw);
+    if path.is_absolute() {
+        Some(path)
+    } else {
+        Some(root.join(path))
+    }
 }
 
 fn git_stash_for(root: &Path, message: Option<&str>) -> Result<(), String> {
@@ -5366,5 +5642,183 @@ mod tests {
             "feature"
         );
         assert_eq!(git_head_branch(&repo.0).as_deref(), Some("feature"));
+    }
+
+    #[test]
+    fn git_worktrees_lists_the_main_checkout_alone_at_first() {
+        let dir = tmp("git-worktree-list");
+        if !init_git_commit(&dir.0, &[("a.txt", "alpha\n")]) {
+            return;
+        }
+        let listed = git_worktrees_for(&dir.0);
+        assert_eq!(listed.entries.len(), 1);
+        let main = &listed.entries[0];
+        assert!(main.main);
+        assert!(!main.prunable);
+        assert!(!main.locked);
+        assert_eq!(main.branch.as_deref(), Some("main"));
+        assert_eq!(
+            PathBuf::from(&main.path).canonicalize().ok(),
+            dir.0.canonicalize().ok()
+        );
+        // New trees are offered next to the repository, never inside it.
+        let parent = PathBuf::from(listed.parent.unwrap());
+        let repo_name = dir.0.file_name().unwrap().to_string_lossy().into_owned();
+        assert_eq!(
+            parent.file_name().unwrap().to_string_lossy(),
+            format!("{repo_name}-worktrees")
+        );
+        assert_eq!(
+            parent.parent().and_then(|path| path.canonicalize().ok()),
+            dir.0.parent().and_then(|path| path.canonicalize().ok())
+        );
+    }
+
+    #[test]
+    fn git_worktrees_are_empty_outside_a_repo() {
+        let dir = tmp("git-worktree-none");
+        assert_eq!(git_worktrees_for(&dir.0), GitWorktrees::default());
+    }
+
+    #[test]
+    fn git_worktree_create_leaves_the_main_checkout_on_its_branch() {
+        let dir = tmp("git-worktree-create");
+        if !init_git_commit(&dir.0, &[("a.txt", "alpha\n")]) {
+            return;
+        }
+        let created = git_worktree_create_for(&dir.0, "feat/picker", None).unwrap();
+        // Cleaned up by hand: the tree is a sibling of the repo, so the Tmp
+        // guard that owns `dir` does not cover it.
+        let created_path = PathBuf::from(&created.path);
+        let parent = created_path.parent().unwrap().to_path_buf();
+        let _guard = Tmp(parent);
+
+        assert_eq!(created.branch.as_deref(), Some("feat/picker"));
+        assert!(!created.main);
+        // The slash in the branch flattens into a single folder segment.
+        assert_eq!(created_path.file_name().unwrap(), "feat-picker");
+        assert!(created_path.join("a.txt").is_file());
+        assert_eq!(
+            git_head_branch(&created_path).as_deref(),
+            Some("feat/picker")
+        );
+        assert_eq!(git_head_branch(&dir.0).as_deref(), Some("main"));
+
+        let listed = git_worktrees_for(&dir.0);
+        assert_eq!(listed.entries.len(), 2);
+        assert!(listed.entries[0].main);
+        let linked = listed
+            .entries
+            .iter()
+            .find(|entry| entry.branch.as_deref() == Some("feat/picker"))
+            .unwrap();
+        assert!(!linked.main);
+        assert_eq!(
+            PathBuf::from(&linked.path).canonicalize().ok(),
+            created_path.canonicalize().ok()
+        );
+        // The same list is visible from inside the linked tree.
+        assert_eq!(git_worktrees_for(&created_path).entries.len(), 2);
+    }
+
+    #[test]
+    fn git_worktree_create_reports_errors_without_touching_the_checkout() {
+        let dir = tmp("git-worktree-create-err");
+        if !init_git_commit(&dir.0, &[("a.txt", "alpha\n")]) {
+            return;
+        }
+        assert!(git_worktree_create_for(&dir.0, "main", None).is_err());
+        assert!(git_worktree_create_for(&dir.0, "  ", None).is_err());
+        assert!(git_worktree_create_for(&dir.0, "feat", Some("nope")).is_err());
+        assert!(git_worktree_create_for(&dir.0, "feat", Some("--force")).is_err());
+        // Nothing moved and nothing new was registered.
+        assert_eq!(git_head_branch(&dir.0).as_deref(), Some("main"));
+        assert_eq!(git_worktrees_for(&dir.0).entries.len(), 1);
+    }
+
+    #[test]
+    fn git_worktree_create_starts_from_the_requested_ref() {
+        let dir = tmp("git-worktree-start");
+        if !init_git_commit(&dir.0, &[("a.txt", "alpha\n")]) {
+            return;
+        }
+        let base = git_stdout(&dir.0, &["rev-parse", "HEAD"]).unwrap();
+        std::fs::write(dir.0.join("a.txt"), "beta\n").unwrap();
+        if !git(&dir.0, &["commit", "-am", "beta"]) {
+            return;
+        }
+        let created = git_worktree_create_for(&dir.0, "from-base", Some(&base)).unwrap();
+        let created_path = PathBuf::from(&created.path);
+        let _guard = Tmp(created_path.parent().unwrap().to_path_buf());
+
+        assert_eq!(
+            std::fs::read_to_string(created_path.join("a.txt")).unwrap(),
+            "alpha\n"
+        );
+        assert_eq!(
+            git_stdout(&created_path, &["rev-parse", "HEAD"]).as_deref(),
+            Some(base.as_str())
+        );
+        // The main checkout kept its own branch and its newer commit.
+        assert_eq!(git_head_branch(&dir.0).as_deref(), Some("main"));
+        assert_eq!(
+            std::fs::read_to_string(dir.0.join("a.txt")).unwrap(),
+            "beta\n"
+        );
+    }
+
+    #[test]
+    fn git_worktree_verify_accepts_only_trees_of_the_same_repo() {
+        let dir = tmp("git-worktree-verify");
+        let other = tmp("git-worktree-verify-other");
+        let plain = tmp("git-worktree-verify-plain");
+        if !init_git_commit(&dir.0, &[("a.txt", "alpha\n")])
+            || !init_git_commit(&other.0, &[("a.txt", "alpha\n")])
+        {
+            return;
+        }
+        let created = git_worktree_create_for(&dir.0, "verify-me", None).unwrap();
+        let created_path = PathBuf::from(&created.path);
+        let _guard = Tmp(created_path.parent().unwrap().to_path_buf());
+
+        assert!(git_worktree_verify_for(&dir.0, &created_path));
+        assert!(git_worktree_verify_for(&dir.0, &dir.0));
+        assert!(!git_worktree_verify_for(&dir.0, &other.0));
+        assert!(!git_worktree_verify_for(&dir.0, &plain.0));
+        assert!(!git_worktree_verify_for(&dir.0, &dir.0.join("gone")));
+
+        // A removed worktree stops verifying, so a restore can fall back.
+        assert!(git(
+            &dir.0,
+            &["worktree", "remove", "--force", &created.path]
+        ));
+        assert!(!git_worktree_verify_for(&dir.0, &created_path));
+    }
+
+    #[test]
+    fn git_worktree_slug_flattens_branch_names() {
+        assert_eq!(git_worktree_slug("feat/thing"), "feat-thing");
+        assert_eq!(git_worktree_slug("release/2.1"), "release-2-1");
+        assert_eq!(git_worktree_slug("--weird--"), "weird");
+        assert_eq!(git_worktree_slug("///"), "worktree");
+    }
+
+    #[test]
+    fn git_worktree_blocks_parse_porcelain_flags() {
+        let dir = tmp("git-worktree-flags");
+        if !init_git_commit(&dir.0, &[("a.txt", "alpha\n")]) {
+            return;
+        }
+        let created = git_worktree_create_for(&dir.0, "locked-tree", None).unwrap();
+        let created_path = PathBuf::from(&created.path);
+        let _guard = Tmp(created_path.parent().unwrap().to_path_buf());
+        if !git(&dir.0, &["worktree", "lock", &created.path]) {
+            return;
+        }
+        let listed = git_worktrees_for(&dir.0);
+        let linked = listed.entries.iter().find(|entry| !entry.main).unwrap();
+        assert!(linked.locked);
+        assert!(!linked.prunable);
+        assert!(git(&dir.0, &["worktree", "unlock", &created.path]));
     }
 }

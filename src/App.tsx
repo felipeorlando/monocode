@@ -243,6 +243,10 @@ import {
   type Session,
   type TurnIntent,
 } from "./lib/session";
+import {
+  applySessionCheckout,
+  type SessionCheckout,
+} from "./lib/sessionCheckout";
 
 import {
   canDispatchQueuedHead,
@@ -3031,16 +3035,31 @@ export default function App({
     (sessionId: string) => {
       notifyGitChanged();
       const current = sessionsRef.current.find((s) => s.id === sessionId);
-      if (!current || (!current.branch && !current.worktreeCwd)) return;
-      if (current.worktreeCwd && current.providerSessionId) {
+      // The picker switches the branch of the working copy this session already
+      // runs in, so its checkout does not move. Only `branch` — a leftover pin
+      // from the removed session-branch feature — has to be cleared.
+      if (!current?.branch) return;
+      const next = { ...current, branch: undefined };
+      setSessions((prev) => prev.map((s) => (s.id === sessionId ? next : s)));
+      persistSession(next);
+      notifyReviewChanged(sessionId);
+    },
+    [persistSession],
+  );
+
+  /** Bind a fresh session to the main checkout or one of the repo's worktrees. */
+  const onCheckoutChange = useCallback(
+    (sessionId: string, checkout: SessionCheckout) => {
+      notifyGitChanged();
+      const current = sessionsRef.current.find((s) => s.id === sessionId);
+      if (!current) return;
+      const next = applySessionCheckout(current, checkout);
+      if (next === current) return;
+      // Any child already bound to the old directory has to go, so the first
+      // turn starts a harness rooted in the checkout the user picked.
+      if (current.providerSessionId) {
         void forgetHarnessSession(current.harness, sessionId);
       }
-      const next = {
-        ...current,
-        branch: undefined,
-        worktreeCwd: undefined,
-        ...(current.worktreeCwd ? { providerSessionId: undefined } : {}),
-      };
       setSessions((prev) => prev.map((s) => (s.id === sessionId ? next : s)));
       persistSession(next);
       notifyReviewChanged(sessionId);
@@ -5051,6 +5070,7 @@ export default function App({
     onClose: onClosePane,
     onCwdChange,
     onBranchChange,
+    onCheckoutChange,
     onModelChange,
     onModelSettingsChange,
     onRuntimeModeChange,

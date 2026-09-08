@@ -234,7 +234,10 @@ export type Session = {
    * kept so older session records still load.
    */
   branch?: string;
-  /** Extra git worktree from the old session-branch feature. Unused. */
+  /**
+   * Linked git worktree this session was started in, chosen once at creation.
+   * Absent for a session that runs in the repository's main checkout.
+   */
   worktreeCwd?: string;
   /** One-shot composer text when opening a session from Inbox. */
   composerSeed?: string;
