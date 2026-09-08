@@ -44,6 +44,11 @@ describe("follow-up behavior setting", () => {
     expect(loadFollowUpBehavior()).toBe("queue");
   });
 
+  it("persists the queue + steer shortcut behavior", () => {
+    saveFollowUpBehavior("queue-steer");
+    expect(loadFollowUpBehavior()).toBe("queue-steer");
+  });
+
   it("ignores unknown stored values", () => {
     localStorage.setItem(FOLLOW_UP_BEHAVIOR_KEY, "interrupt");
     expect(loadFollowUpBehavior()).toBe("steer");

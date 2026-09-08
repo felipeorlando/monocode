@@ -176,6 +176,9 @@ type Props = {
   onOpenWhatsNew: (version: string) => void;
 };
 
+/** How the steer chord reads on this platform: ⌘↩ on macOS, Ctrl+↩ elsewhere. */
+const STEER_SHORTCUT = `${IS_MAC ? "⌘" : "Ctrl+"}↩`;
+
 export function SettingsView({
   section,
   cwd,
@@ -413,14 +416,16 @@ function GeneralPage({
       </Row>
       <Row
         label="Follow-up behavior"
-        description="Queue follow-ups until the active turn finishes, or steer the active turn immediately."
+        description={`Queue follow-ups until the active turn finishes, or steer the active turn immediately. Shortcut keeps both one keystroke away: Enter queues, ${STEER_SHORTCUT} steers the running turn.`}
       >
         <Segmented
           label="Follow-up behavior"
+          width="w-56"
           value={followUpBehavior}
           options={[
             { value: "queue", label: "Queue" },
             { value: "steer", label: "Steer" },
+            { value: "queue-steer", label: "Shortcut" },
           ]}
           onChange={onFollowUpBehavior}
         />
@@ -1379,17 +1384,20 @@ function Segmented<T extends string>({
   value,
   options,
   onChange,
+  // Two options fit the default track; more (or longer) labels need room.
+  width = "w-40",
 }: {
   label: string;
   value: T;
   options: { value: T; label: string }[];
   onChange: (value: T) => void;
+  width?: string;
 }) {
   return (
     <div
       role="radiogroup"
       aria-label={label}
-      className="grid w-40 gap-0.5 rounded-md border border-content/10 p-0.5 text-[12px]"
+      className={`grid ${width} gap-0.5 rounded-md border border-content/10 p-0.5 text-[12px]`}
       style={{ gridTemplateColumns: `repeat(${options.length}, minmax(0, 1fr))` }}
     >
       {options.map((option) => (

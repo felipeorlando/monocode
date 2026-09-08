@@ -249,6 +249,7 @@ import {
   dequeueQueuedMessage,
   queuedMessageForSubmit,
 } from "./lib/messageQueue";
+import { resolveFollowUpAction } from "./lib/followUp";
 import { dropContextWindow } from "./lib/contextUsage";
 import {
   deleteSession,
@@ -3435,6 +3436,8 @@ export default function App({
       options?: {
         secondOpinion?: SecondOpinionMeta;
         followUpBehavior?: FollowUpBehavior;
+        /** ⌘/Ctrl was held on Enter; only the `queue-steer` setting acts on it. */
+        steerShortcut?: boolean;
         noteCard?: NoteComposerCard;
         handoffCard?: HandoffComposerCard;
         queuedMessageId?: string;
@@ -3492,11 +3495,14 @@ export default function App({
           : null;
 
       if (current.busy && !pendingSwitch) {
-        const followUpBehavior =
+        const followUpAction =
           intent === "plan"
             ? "queue"
-            : (options?.followUpBehavior ?? loadFollowUpBehavior());
-        if (followUpBehavior === "queue") {
+            : resolveFollowUpAction(
+                options?.followUpBehavior ?? loadFollowUpBehavior(),
+                options?.steerShortcut ?? false,
+              );
+        if (followUpAction === "queue") {
           setSessions((prev) =>
             prev.map((s) =>
               s.id === sessionId

@@ -99,6 +99,8 @@ import { ModelSettings } from "./ModelSettings";
 import { QuestionForm } from "./QuestionForm";
 import { SkillPicker } from "./SkillPicker";
 import { projectKey } from "../lib/paths";
+import { isSteerShortcut } from "../lib/followUp";
+import { IS_MAC } from "../lib/platform";
 import { consumeQuoteRequest, type QuoteRequest } from "../lib/quoteDraft";
 import { useTabGroupLogos } from "../hooks/useTabGroupLogos";
 import {
@@ -165,7 +167,7 @@ type Props = {
   onSubmit: (
     text: string,
     attachments: Attachment[],
-    options?: { intent?: TurnIntent },
+    options?: { intent?: TurnIntent; steerShortcut?: boolean },
   ) => void;
   onStop?: () => void;
   onCompactContext?: () => boolean;
@@ -899,7 +901,7 @@ export function Composer({
     };
   }, [addAttachments, attachmentsSupported, enabled]);
 
-  const submit = (value: string) => {
+  const submit = (value: string, options?: { steerShortcut?: boolean }) => {
     if (isCompactCommand(value)) {
       if (!onCompactContext?.()) return;
       if (!ref.current) return;
@@ -924,6 +926,7 @@ export function Composer({
     if (!text && files.length === 0 && !noteCard && !handoffCard) return;
     onSubmit(text, files, {
       intent: planSelected || command.planning ? "plan" : "default",
+      steerShortcut: options?.steerShortcut,
     });
     if (!ref.current) return;
     ref.current.value = "";
@@ -1033,7 +1036,12 @@ export function Composer({
 
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      submit(e.currentTarget.value);
+      // ⌘/Ctrl+Enter has always landed here as a plain send; we now pass the
+      // modifier through so the follow-up setting can turn this one send into a
+      // steer. The pickers above still swallow Enter first, modifier or not.
+      submit(e.currentTarget.value, {
+        steerShortcut: isSteerShortcut(e, IS_MAC),
+      });
     }
   };
 

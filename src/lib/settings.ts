@@ -80,16 +80,22 @@ const COMPOSER_RUNNER_KEY = "monocode.composerRunner";
 
 const FOLLOW_UP_BEHAVIOR_KEY = "monocode.followUpBehavior";
 
-export type FollowUpBehavior = "steer" | "queue";
+/**
+ * `queue-steer` queues on plain Enter and steers on ⌘/Ctrl+Enter; the other two
+ * ignore modifiers and always do the one thing they name.
+ */
+export type FollowUpBehavior = "steer" | "queue" | "queue-steer";
 
 export const FOLLOW_UP_BEHAVIOR_DEFAULT: FollowUpBehavior = "steer";
+
+function isFollowUpBehavior(raw: string | null): raw is FollowUpBehavior {
+  return raw === "steer" || raw === "queue" || raw === "queue-steer";
+}
 
 export function loadFollowUpBehavior(): FollowUpBehavior {
   try {
     const raw = localStorage.getItem(FOLLOW_UP_BEHAVIOR_KEY);
-    return raw === "queue" || raw === "steer"
-      ? raw
-      : FOLLOW_UP_BEHAVIOR_DEFAULT;
+    return isFollowUpBehavior(raw) ? raw : FOLLOW_UP_BEHAVIOR_DEFAULT;
   } catch {
     return FOLLOW_UP_BEHAVIOR_DEFAULT;
   }

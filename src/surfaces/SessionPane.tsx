@@ -67,7 +67,7 @@ type Props = {
     sessionId: string,
     text: string,
     attachments: Attachment[],
-    options?: { intent?: TurnIntent },
+    options?: { intent?: TurnIntent; steerShortcut?: boolean },
   ) => void;
   onStop: (sessionId: string) => void;
   onCompactContext: (sessionId: string) => boolean;
