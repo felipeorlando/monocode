@@ -38,9 +38,12 @@ export function generateCommitMessage(
   return generateHarnessCommitMessage(pickTextHarness(preferred), cwd);
 }
 
+/** `base` is the ref the branch is being reviewed against, defaulting to the
+ *  repository default when omitted. */
 export function generatePrContent(
   cwd: string,
   preferred?: HarnessId,
+  base?: string | null,
 ): Promise<(PrContent & { base: string; head: string }) | null> {
-  return generateHarnessPrContent(pickTextHarness(preferred), cwd);
+  return generateHarnessPrContent(pickTextHarness(preferred), cwd, base);
 }

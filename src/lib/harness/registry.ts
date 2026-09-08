@@ -54,9 +54,11 @@ export type HarnessAdapter = {
   generateTitle?(input: TitleInput): Promise<string | null>;
   /** Optional LLM commit message from staged changes. */
   generateCommitMessage?(cwd: string): Promise<string>;
-  /** Optional LLM pull request title/body from branch diff context. */
+  /** Optional LLM pull request title/body from branch diff context.
+   *  `base` overrides the repository default as the comparison base. */
   generatePrContent?(
     cwd: string,
+    base?: string | null,
   ): Promise<(PrContent & { base: string; head: string }) | null>;
   /** Optional LLM branch name from a user message. */
   generateBranchName?(cwd: string, message: string): Promise<string | null>;
@@ -278,10 +280,11 @@ export async function generateHarnessCommitMessage(
 export async function generateHarnessPrContent(
   harness: HarnessId,
   cwd: string,
+  base?: string | null,
 ): Promise<(PrContent & { base: string; head: string }) | null> {
   const adapter = getHarness(harness);
   if (!adapter?.generatePrContent) return null;
-  return adapter.generatePrContent(cwd);
+  return adapter.generatePrContent(cwd, base);
 }
 
 export async function generateHarnessBranchName(
