@@ -23,6 +23,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
+import { CompareBasePicker } from "./CompareBasePicker";
 import { FileTypeIcon } from "./FileTypeIcon";
 import {
   GitHistoryGraph,
@@ -54,6 +55,7 @@ import {
   type GitPr,
 } from "../lib/fs";
 import type { HarnessId } from "../lib/session";
+import { loadCompareBase, saveCompareBase } from "../lib/compareBase";
 import { generateCommitMessage, generatePrContent } from "../lib/harness";
 import { invalidateWatchedFiles } from "../lib/fileWatch";
 import { MOD } from "../lib/platform";
@@ -95,7 +97,11 @@ export function GitChangesPanel({
   onOpenFile,
   onOpenCommit,
 }: Props) {
-  const { index, reload } = useDiffIndex(cwd, enabled);
+  // The pick is per folder, so a worktree and its parent checkout can review
+  // against different bases at the same time.
+  const [base, setBase] = useState(() => loadCompareBase(cwd));
+  useEffect(() => setBase(loadCompareBase(cwd)), [cwd]);
+  const { index, reload } = useDiffIndex(cwd, enabled, base);
   const files = index?.files ?? [];
   const paneRef = useRef<HTMLDivElement>(null);
   const [graphHeight, setGraphHeight] = useState(loadGraphPanelHeight);
@@ -150,6 +156,19 @@ export function GitChangesPanel({
           <span className="ml-auto" />
         )}
       </header>
+      <CompareBar
+        cwd={cwd}
+        index={index}
+        enabled={enabled}
+        onPick={(next) => {
+          saveCompareBase(cwd, next);
+          setBase(next);
+          // The cached index was measured against the old base; drop it so the
+          // panel never shows counts attributed to the wrong comparison.
+          indexByCwd.delete(cwd);
+          reload();
+        }}
+      />
       <ChangedFiles
         cwd={cwd}
         textHarness={textHarness}
@@ -206,6 +225,63 @@ export function GitChangesPanel({
   );
 }
 
+/**
+ * States the comparison in full: which branch is being reviewed, which ref it
+ * is measured against, and what that comparison adds up to. Nothing here
+ * changes the checkout — only what HEAD is diffed with.
+ */
+function CompareBar({
+  cwd,
+  index,
+  enabled,
+  onPick,
+}: {
+  cwd: string;
+  index: GitDiffIndex | null;
+  enabled: boolean;
+  onPick: (base: string | null) => void;
+}) {
+  if (!index?.branch) return null;
+  const files = index.branchFiles;
+  return (
+    <div className="shrink-0 border-b border-content/10 px-3 py-1.5">
+      <div className="flex h-5 items-center gap-1 text-[11px] text-content/50">
+        <GitBranch className="size-3 shrink-0" strokeWidth={1.75} />
+        <span className="min-w-0 max-w-[45%] truncate font-mono">
+          {index.branch}
+        </span>
+        <span className="shrink-0 text-content/35">→</span>
+        <CompareBasePicker
+          cwd={cwd}
+          base={index.base}
+          defaultBranch={index.defaultBranch}
+          enabled={enabled}
+          onPick={onPick}
+        />
+        <span className="ml-auto flex shrink-0 items-center gap-1.5 tabular-nums">
+          {files > 0 ? (
+            <span className="text-content/45">
+              {files} file{files === 1 ? "" : "s"}
+            </span>
+          ) : (
+            <span className="text-content/35">no branch changes</span>
+          )}
+          <DiffCounts
+            additions={index.branchAdditions}
+            deletions={index.branchDeletions}
+          />
+        </span>
+      </div>
+      {index.baseError ? (
+        <p className="mt-1 text-[11px] leading-4 text-amber-400/90">
+          {index.baseError}. Comparing against{" "}
+          <span className="font-mono">{index.base ?? "nothing"}</span> instead.
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
 function ChangedFiles({
   cwd,
   textHarness,
@@ -253,7 +329,7 @@ function ChangedFiles({
     !onDefault &&
     !diverged &&
     files.length === 0 &&
-    (index?.aheadOfDefault ?? 0) > 0 &&
+    (index?.aheadOfBase ?? 0) > 0 &&
     (index?.behind ?? 0) === 0;
   const canViewPr = hasOpenPr && !!pr?.url;
   const canPublish = hasRemote && !index?.upstream;
@@ -412,7 +488,9 @@ function ChangedFiles({
   };
 
   const openCreatedPr = async () => {
-    const content = await generatePrContent(cwd, textHarness);
+    // The already-resolved base from the index, not the raw preference, so the
+    // PR targets exactly the branch the panel says it is comparing against.
+    const content = await generatePrContent(cwd, textHarness, index?.base);
     if (!content) throw new Error("Could not prepare pull request content");
     const url = await gitPrCreate(
       cwd,
@@ -737,8 +815,8 @@ function GitSyncActions({
         : behind > 0
           ? `Pull ${behind} commit${behind === 1 ? "" : "s"} from ${dest}`
           : `Push ${ahead} commit${ahead === 1 ? "" : "s"} to ${dest}`;
-  const createTitle = index.defaultBranch
-    ? `Create a pull request into ${index.defaultBranch}`
+  const createTitle = index.base
+    ? `Create a pull request into ${index.base}`
     : "Create pull request";
   const viewTitle = pr?.title
     ? `View PR #${pr.number}: ${pr.title}`
@@ -1045,6 +1123,7 @@ function statusColor(status: string): string {
 function useDiffIndex(
   cwd: string,
   enabled: boolean,
+  base: string | null,
 ): {
   index: GitDiffIndex | null;
   reload: () => void;
@@ -1078,7 +1157,7 @@ function useDiffIndex(
       if (document.hidden && nonce === 0) return;
       inFlight = true;
       try {
-        const next = await gitDiffIndex(cwd);
+        const next = await gitDiffIndex(cwd, base);
         if (cancelled) return;
         const prev = indexRef.current;
         if (sameIndex(prev, next)) return;
@@ -1124,7 +1203,7 @@ function useDiffIndex(
       document.removeEventListener("visibilitychange", onResume);
       unsubGit();
     };
-  }, [cwd, enabled, nonce]);
+  }, [base, cwd, enabled, nonce]);
 
   return { index, reload };
 }
@@ -1173,7 +1252,13 @@ function sameIndex(prev: GitDiffIndex | null, next: GitDiffIndex): boolean {
     prev.defaultBranch !== next.defaultBranch ||
     prev.ahead !== next.ahead ||
     prev.behind !== next.behind ||
-    prev.aheadOfDefault !== next.aheadOfDefault
+    prev.base !== next.base ||
+    prev.baseRef !== next.baseRef ||
+    prev.baseError !== next.baseError ||
+    prev.aheadOfBase !== next.aheadOfBase ||
+    prev.branchFiles !== next.branchFiles ||
+    prev.branchAdditions !== next.branchAdditions ||
+    prev.branchDeletions !== next.branchDeletions
   ) {
     return false;
   }

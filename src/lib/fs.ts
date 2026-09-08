@@ -76,11 +76,24 @@ export type GitDiffIndex = {
   defaultBranch: string | null;
   ahead: number;
   behind: number;
-  aheadOfDefault: number;
+  /** Branch the branch-level diff is compared against, after resolution. */
+  base: string | null;
+  /** Ref `base` resolved to, e.g. `origin/main`. */
+  baseRef: string | null;
+  /** Why a requested base was dropped in favour of the repository default. */
+  baseError: string | null;
+  aheadOfBase: number;
+  branchFiles: number;
+  branchAdditions: number;
+  branchDeletions: number;
 };
 
-export function gitDiffIndex(cwd: string): Promise<GitDiffIndex> {
-  return invoke<GitDiffIndex>("git_diff_index", { cwd });
+/** `base` picks the branch-level compare base; omit it for the repo default. */
+export function gitDiffIndex(
+  cwd: string,
+  base?: string | null,
+): Promise<GitDiffIndex> {
+  return invoke<GitDiffIndex>("git_diff_index", { cwd, base: base ?? null });
 }
 
 /** File list and counts only, for diff content views that do not need sync data. */
@@ -202,14 +215,22 @@ export function gitSync(cwd: string): Promise<void> {
 
 export type GitRangeContext = {
   base: string;
+  baseRef: string;
   head: string;
   commitSummary: string;
   diffSummary: string;
   diffPatch: string;
 };
 
-export function gitRangeContext(cwd: string): Promise<GitRangeContext> {
-  return invoke<GitRangeContext>("git_range_context", { cwd });
+/** Rejects rather than silently retargeting when `base` cannot be resolved. */
+export function gitRangeContext(
+  cwd: string,
+  base?: string | null,
+): Promise<GitRangeContext> {
+  return invoke<GitRangeContext>("git_range_context", {
+    cwd,
+    base: base ?? null,
+  });
 }
 
 export type GitPr = {

@@ -223,15 +223,33 @@ pub struct GitDiffIndex {
     pub default_branch: Option<String>,
     pub ahead: i64,
     pub behind: i64,
-    pub ahead_of_default: i64,
+    /// Branch name the diff is compared against. The repository default unless
+    /// the caller picked another base.
+    pub base: Option<String>,
+    /// Ref `base` resolved to, e.g. `origin/main`. Shown so the UI can never
+    /// imply a comparison it is not actually running.
+    pub base_ref: Option<String>,
+    /// Set when the requested base could not be resolved and we fell back to the
+    /// repository default. The UI surfaces this instead of quietly diffing
+    /// against a different branch.
+    pub base_error: Option<String>,
+    /// Commits on HEAD since it forked from `base_ref`.
+    pub ahead_of_base: i64,
+    /// Files and lines HEAD introduced since the fork point (`base...HEAD`).
+    pub branch_files: i64,
+    pub branch_additions: i64,
+    pub branch_deletions: i64,
 }
 
 /// Changed files in the opened folder, with per-file line counts and status.
+/// `base` picks the branch-level comparison base; `None` uses the repo default.
 #[tauri::command]
-pub async fn git_diff_index(cwd: String) -> Result<GitDiffIndex, String> {
-    tauri::async_runtime::spawn_blocking(move || git_diff_index_for(&expand_home(&cwd)))
-        .await
-        .map_err(|e| e.to_string())
+pub async fn git_diff_index(cwd: String, base: Option<String>) -> Result<GitDiffIndex, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        git_diff_index_for(&expand_home(&cwd), base.as_deref())
+    })
+    .await
+    .map_err(|e| e.to_string())
 }
 
 /// Changed files and counts without branch/upstream synchronization metadata.
@@ -447,18 +465,26 @@ pub async fn git_sync(cwd: String) -> Result<(), String> {
 #[serde(rename_all = "camelCase")]
 pub struct GitRangeContext {
     pub base: String,
+    /// Ref `base` resolved to, e.g. `origin/main`.
+    pub base_ref: String,
     pub head: String,
     pub commit_summary: String,
     pub diff_summary: String,
     pub diff_patch: String,
 }
 
-/// Commits and diff between the default branch and HEAD, for PR text generation.
+/// Commits and diff between the compare base and HEAD, for PR text generation.
+/// `base` defaults to the repository default branch when omitted.
 #[tauri::command]
-pub async fn git_range_context(cwd: String) -> Result<GitRangeContext, String> {
-    tauri::async_runtime::spawn_blocking(move || git_range_context_for(&expand_home(&cwd)))
-        .await
-        .map_err(|e| e.to_string())?
+pub async fn git_range_context(
+    cwd: String,
+    base: Option<String>,
+) -> Result<GitRangeContext, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        git_range_context_for(&expand_home(&cwd), base.as_deref())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -782,16 +808,16 @@ struct FileAcc {
     unstaged: bool,
 }
 
-pub(crate) fn git_diff_index_for(root: &Path) -> GitDiffIndex {
-    git_diff_index_with(root, true)
+pub(crate) fn git_diff_index_for(root: &Path, base: Option<&str>) -> GitDiffIndex {
+    git_diff_index_with(root, true, base)
 }
 
 /// File list + counts only. Skips ahead/behind/remote lookups used by Git chrome.
 pub(crate) fn git_diff_files_for(root: &Path) -> GitDiffIndex {
-    git_diff_index_with(root, false)
+    git_diff_index_with(root, false, None)
 }
 
-fn git_diff_index_with(root: &Path, include_sync: bool) -> GitDiffIndex {
+fn git_diff_index_with(root: &Path, include_sync: bool, base: Option<&str>) -> GitDiffIndex {
     let mut files: HashMap<String, FileAcc> = HashMap::new();
     let mut statuses: HashMap<String, &'static str> = HashMap::new();
 
@@ -882,10 +908,10 @@ fn git_diff_index_with(root: &Path, include_sync: bool) -> GitDiffIndex {
         });
     }
     out.sort_by(|a, b| a.relative.cmp(&b.relative));
-    let sync = if include_sync {
-        git_sync_for(root)
+    let (sync, compare) = if include_sync {
+        (git_sync_for(root), git_base_compare_for(root, base))
     } else {
-        GitSync::default()
+        (GitSync::default(), GitBaseCompare::default())
     };
     GitDiffIndex {
         branch: git_branch(root),
@@ -897,7 +923,13 @@ fn git_diff_index_with(root: &Path, include_sync: bool) -> GitDiffIndex {
         default_branch: sync.default_branch,
         ahead: sync.ahead,
         behind: sync.behind,
-        ahead_of_default: sync.ahead_of_default,
+        base: compare.base,
+        base_ref: compare.base_ref,
+        base_error: compare.base_error,
+        ahead_of_base: compare.ahead_of_base,
+        branch_files: compare.branch_files,
+        branch_additions: compare.branch_additions,
+        branch_deletions: compare.branch_deletions,
     }
 }
 
@@ -1455,7 +1487,7 @@ fn git_discard_file_for(root: &Path, relative: &str) -> Result<(), String> {
 }
 
 fn git_discard_all_for(root: &Path) -> Result<(), String> {
-    let files: Vec<String> = git_diff_index_for(root)
+    let files: Vec<String> = git_diff_files_for(root)
         .files
         .into_iter()
         .filter(|file| file.unstaged)
@@ -1522,29 +1554,25 @@ fn git_sync_changes_for(root: &Path) -> Result<(), String> {
     git_push_for(root)
 }
 
-fn git_range_context_for(root: &Path) -> Result<GitRangeContext, String> {
+fn git_range_context_for(root: &Path, base: Option<&str>) -> Result<GitRangeContext, String> {
     let head = git_branch(root).ok_or_else(|| "Not on a branch".to_string())?;
-    let remote = git_remote_name(root);
-    let default_branch = git_default_branch(root, remote.as_deref())
-        .ok_or_else(|| "Could not resolve the default branch".to_string())?;
-    let base_ref = match &remote {
-        Some(remote)
-            if git_ref_exists(root, &format!("refs/remotes/{remote}/{default_branch}")) =>
-        {
-            format!("{remote}/{default_branch}")
-        }
-        _ => default_branch.clone(),
-    };
-    let spec = format!("{base_ref}...HEAD");
-    let commit_summary =
-        git_run(root, &["log", "--format=%s", &format!("{base_ref}..HEAD")]).unwrap_or_default();
+    // No silent fallback here: a pull request opened against the wrong base is
+    // worse than one that fails to open, so an unresolvable base aborts.
+    let compare = git_compare_base(root, base)?;
+    let spec = format!("{}...HEAD", compare.spec);
+    let commit_summary = git_run(
+        root,
+        &["log", "--format=%s", &format!("{}..HEAD", compare.spec)],
+    )
+    .unwrap_or_default();
     let diff_summary = git_run(root, &["diff", "--stat", &spec]).unwrap_or_default();
     let diff_patch = git_run(root, &["diff", "--no-ext-diff", &spec]).unwrap_or_default();
     if commit_summary.trim().is_empty() && diff_patch.trim().is_empty() {
         return Err("No commits to include in a pull request".into());
     }
     Ok(GitRangeContext {
-        base: default_branch,
+        base: compare.name,
+        base_ref: compare.spec,
         head,
         commit_summary,
         diff_summary,
@@ -2822,7 +2850,6 @@ struct GitSync {
     default_branch: Option<String>,
     ahead: i64,
     behind: i64,
-    ahead_of_default: i64,
 }
 
 fn git_sync_for(root: &Path) -> GitSync {
@@ -2840,19 +2867,126 @@ fn git_sync_for(root: &Path) -> GitSync {
     } else {
         (0, 0)
     };
-    let ahead_of_default = if let Some(base) = default_ref.as_deref() {
-        git_ahead_behind(root, base).0
-    } else {
-        ahead
-    };
     GitSync {
         remote,
         upstream,
         default_branch,
         ahead,
         behind,
-        ahead_of_default,
     }
+}
+
+/// A compare base resolved to something git can actually diff against.
+struct CompareBase {
+    /// Branch name as the user picked it, without a remote prefix.
+    name: String,
+    /// Ref handed to git. Prefers the remote copy, because that is the commit a
+    /// pull request would really be merged into.
+    spec: String,
+}
+
+/// Map a user-visible base name onto a ref that exists in this checkout.
+///
+/// Accepts a plain branch (`main`, `feature/x`) or a remote-qualified one
+/// (`origin/main`). Returns `None` when nothing matches, so callers can report
+/// a deleted base instead of falling through to some other branch.
+fn git_resolve_base(root: &Path, requested: &str, remote: Option<&str>) -> Option<CompareBase> {
+    let requested = requested.trim();
+    if requested.is_empty() {
+        return None;
+    }
+    let tracked = remote
+        .map(|remote| format!("{remote}/{requested}"))
+        .filter(|spec| git_ref_exists(root, &format!("refs/remotes/{spec}")));
+    if tracked.is_some() || git_ref_exists(root, &format!("refs/heads/{requested}")) {
+        return Some(CompareBase {
+            name: requested.to_string(),
+            spec: tracked.unwrap_or_else(|| requested.to_string()),
+        });
+    }
+    // Branch on a remote other than the primary one, spelled out in full.
+    if git_ref_exists(root, &format!("refs/remotes/{requested}")) {
+        let (_, name) = requested.split_once('/')?;
+        return Some(CompareBase {
+            name: name.to_string(),
+            spec: requested.to_string(),
+        });
+    }
+    None
+}
+
+/// Resolve the base for `<base>...HEAD`. `requested` is the user's pick; `None`
+/// means "use the repository default".
+fn git_compare_base(root: &Path, requested: Option<&str>) -> Result<CompareBase, String> {
+    let remote = git_remote_name(root);
+    if let Some(requested) = requested.map(str::trim).filter(|value| !value.is_empty()) {
+        return git_resolve_base(root, requested, remote.as_deref())
+            .ok_or_else(|| format!("Compare base \"{requested}\" no longer exists"));
+    }
+    let default_branch = git_default_branch(root, remote.as_deref())
+        .ok_or_else(|| "Could not resolve the default branch".to_string())?;
+    git_resolve_base(root, &default_branch, remote.as_deref())
+        .ok_or_else(|| format!("Compare base \"{default_branch}\" no longer exists"))
+}
+
+#[derive(Default)]
+struct GitBaseCompare {
+    base: Option<String>,
+    base_ref: Option<String>,
+    base_error: Option<String>,
+    ahead_of_base: i64,
+    branch_files: i64,
+    branch_additions: i64,
+    branch_deletions: i64,
+}
+
+/// Branch-level totals for the status view. A base the user picked that no
+/// longer resolves reports the failure next to the repository default it fell
+/// back to, so the panel can say which ref it is really diffing.
+fn git_base_compare_for(root: &Path, requested: Option<&str>) -> GitBaseCompare {
+    let (compare, base_error) = match git_compare_base(root, requested) {
+        Ok(compare) => (Some(compare), None),
+        Err(error) if requested.is_some() => match git_compare_base(root, None) {
+            Ok(compare) => (Some(compare), Some(error)),
+            Err(_) => (None, Some(error)),
+        },
+        Err(_) => (None, None),
+    };
+    let Some(compare) = compare else {
+        return GitBaseCompare {
+            base_error,
+            ..GitBaseCompare::default()
+        };
+    };
+    // Three-dot: only what HEAD added since the fork point, so commits that
+    // landed on the base afterwards do not show up as this branch's work.
+    let (branch_files, branch_additions, branch_deletions) =
+        git_numstat_totals(root, &format!("{}...HEAD", compare.spec));
+    GitBaseCompare {
+        base: Some(compare.name),
+        ahead_of_base: git_ahead_behind(root, &compare.spec).0,
+        base_ref: Some(compare.spec),
+        base_error,
+        branch_files,
+        branch_additions,
+        branch_deletions,
+    }
+}
+
+/// (files, additions, deletions) for a diff spec, from `--numstat`.
+fn git_numstat_totals(root: &Path, spec: &str) -> (i64, i64, i64) {
+    let Some(text) = git_run(root, &["diff", "--no-ext-diff", "--numstat", spec]) else {
+        return (0, 0, 0);
+    };
+    let mut files: HashMap<String, FileAcc> = HashMap::new();
+    add_numstat_map(&text, &mut files);
+    let mut additions = 0i64;
+    let mut deletions = 0i64;
+    for acc in files.values() {
+        additions += acc.additions;
+        deletions += acc.deletions;
+    }
+    (files.len() as i64, additions, deletions)
 }
 
 fn git_remote_name(root: &Path) -> Option<String> {
@@ -4278,7 +4412,7 @@ mod tests {
         std::fs::write(dir.0.join("a.txt"), "alpha\ngamma\ndelta\n").unwrap();
         std::fs::write(dir.0.join("new.txt"), "hello\nworld\n").unwrap();
 
-        let index = git_diff_index_for(&dir.0);
+        let index = git_diff_index_for(&dir.0, None);
         assert_eq!(index.branch.as_deref(), Some("main"));
         assert_eq!(index.files.len(), 2);
 
@@ -4551,7 +4685,7 @@ mod tests {
         }
         std::fs::write(dir.0.join("a.txt"), "beta\n").unwrap();
         git_stage_file_for(&dir.0, "a.txt").unwrap();
-        let staged = git_diff_index_for(&dir.0)
+        let staged = git_diff_index_for(&dir.0, None)
             .files
             .into_iter()
             .find(|file| file.relative == "a.txt")
@@ -4560,7 +4694,7 @@ mod tests {
         assert!(!staged.unstaged);
 
         git_unstage_file_for(&dir.0, "a.txt").unwrap();
-        let unstaged = git_diff_index_for(&dir.0)
+        let unstaged = git_diff_index_for(&dir.0, None)
             .files
             .into_iter()
             .find(|file| file.relative == "a.txt")
@@ -4578,7 +4712,7 @@ mod tests {
         std::fs::write(dir.0.join("a.txt"), "alpha\nBETA\ngamma\nDELTA\n").unwrap();
         git_stage_contents_for(&dir.0, "a.txt", b"alpha\nBETA\ngamma\ndelta\n").unwrap();
 
-        let file = git_diff_index_for(&dir.0)
+        let file = git_diff_index_for(&dir.0, None)
             .files
             .into_iter()
             .find(|file| file.relative == "a.txt")
@@ -4608,7 +4742,7 @@ mod tests {
             "alpha\n"
         );
         assert!(!dir.0.join("new.txt").exists());
-        assert!(git_diff_index_for(&dir.0).files.is_empty());
+        assert!(git_diff_index_for(&dir.0, None).files.is_empty());
     }
 
     #[test]
@@ -4634,14 +4768,14 @@ mod tests {
             "two\n"
         );
         assert!(!dir.0.join("new.txt").exists());
-        let file = git_diff_index_for(&dir.0)
+        let file = git_diff_index_for(&dir.0, None)
             .files
             .into_iter()
             .find(|file| file.relative == "b.txt")
             .unwrap();
         assert!(file.staged);
         assert!(!file.unstaged);
-        assert!(git_diff_index_for(&dir.0)
+        assert!(git_diff_index_for(&dir.0, None)
             .files
             .iter()
             .all(|file| !file.unstaged));
@@ -4661,7 +4795,7 @@ mod tests {
             std::fs::read_to_string(dir.0.join("a.txt")).unwrap(),
             "beta\n"
         );
-        let file = git_diff_index_for(&dir.0)
+        let file = git_diff_index_for(&dir.0, None)
             .files
             .into_iter()
             .find(|file| file.relative == "a.txt")
@@ -4679,7 +4813,7 @@ mod tests {
         std::fs::write(dir.0.join("a.txt"), "beta\n").unwrap();
         git_stage_file_for(&dir.0, "a.txt").unwrap();
         git_commit_for(&dir.0, "update a").unwrap();
-        assert!(git_diff_index_for(&dir.0).files.is_empty());
+        assert!(git_diff_index_for(&dir.0, None).files.is_empty());
         assert_eq!(
             git_stdout(&dir.0, &["log", "-1", "--pretty=%s"]).as_deref(),
             Some("update a")
@@ -4742,13 +4876,13 @@ mod tests {
         std::fs::write(repo.0.join("a.txt"), "beta\n").unwrap();
         git_stage_file_for(&repo.0, "a.txt").unwrap();
         git_commit_for(&repo.0, "second").unwrap();
-        let index = git_diff_index_for(&repo.0);
+        let index = git_diff_index_for(&repo.0, None);
         assert_eq!(index.remote.as_deref(), Some("origin"));
         assert_eq!(index.upstream.as_deref(), Some("origin/main"));
         assert_eq!(index.default_branch.as_deref(), Some("main"));
         assert_eq!(index.ahead, 1);
         assert_eq!(index.behind, 0);
-        assert_eq!(index.ahead_of_default, 1);
+        assert_eq!(index.ahead_of_base, 1);
     }
 
     #[test]
@@ -4777,15 +4911,145 @@ mod tests {
         std::fs::write(repo.0.join("a.txt"), "beta\n").unwrap();
         git_stage_file_for(&repo.0, "a.txt").unwrap();
         git_commit_for(&repo.0, "feature work").unwrap();
-        let index = git_diff_index_for(&repo.0);
+        let index = git_diff_index_for(&repo.0, None);
         assert_eq!(index.branch.as_deref(), Some("feature"));
         assert_eq!(index.upstream, None);
         assert_eq!(index.ahead, 1);
-        assert_eq!(index.ahead_of_default, 1);
-        let range = git_range_context_for(&repo.0).unwrap();
+        assert_eq!(index.ahead_of_base, 1);
+        assert_eq!(index.base.as_deref(), Some("main"));
+        // The remote copy is preferred: it is what a PR would merge into.
+        assert_eq!(index.base_ref.as_deref(), Some("origin/main"));
+        let range = git_range_context_for(&repo.0, None).unwrap();
         assert_eq!(range.base, "main");
+        assert_eq!(range.base_ref, "origin/main");
         assert_eq!(range.head, "feature");
         assert!(range.commit_summary.contains("feature work"));
+    }
+
+    /// `main` -> `feature-a` -> `feature-b`, no remote, so every base resolves
+    /// to a local ref.
+    fn init_stacked_repo(dir: &Path) -> bool {
+        if !init_git_commit(dir, &[("a.txt", "alpha\n")])
+            || !git(dir, &["checkout", "-b", "feature-a"])
+        {
+            return false;
+        }
+        if std::fs::write(dir.join("a.txt"), "alpha\nfrom-a\n").is_err() {
+            return false;
+        }
+        if !git(dir, &["add", "."])
+            || !git(dir, &["commit", "-m", "work on a"])
+            || !git(dir, &["checkout", "-b", "feature-b"])
+        {
+            return false;
+        }
+        if std::fs::write(dir.join("b.txt"), "from-b\n").is_err() {
+            return false;
+        }
+        git(dir, &["add", "."]) && git(dir, &["commit", "-m", "work on b"])
+    }
+
+    #[test]
+    fn git_range_context_compares_against_the_selected_base() {
+        let repo = tmp("git-base-stacked");
+        if !init_stacked_repo(&repo.0) {
+            return;
+        }
+        let default = git_range_context_for(&repo.0, None).unwrap();
+        assert_eq!(default.base, "main");
+        assert_eq!(default.base_ref, "main");
+        assert!(default.commit_summary.contains("work on a"));
+        assert!(default.commit_summary.contains("work on b"));
+
+        // Stacked review: only what feature-b added on top of feature-a.
+        let stacked = git_range_context_for(&repo.0, Some("feature-a")).unwrap();
+        assert_eq!(stacked.base, "feature-a");
+        assert_eq!(stacked.head, "feature-b");
+        assert!(!stacked.commit_summary.contains("work on a"));
+        assert!(stacked.commit_summary.contains("work on b"));
+        assert!(stacked.diff_patch.contains("b.txt"));
+        assert!(!stacked.diff_patch.contains("from-a"));
+    }
+
+    #[test]
+    fn git_range_context_rejects_a_deleted_base() {
+        let repo = tmp("git-base-missing");
+        if !init_stacked_repo(&repo.0) {
+            return;
+        }
+        let error = git_range_context_for(&repo.0, Some("gone")).unwrap_err();
+        assert!(error.contains("gone"), "{error}");
+    }
+
+    #[test]
+    fn git_diff_index_counts_against_the_selected_base() {
+        let repo = tmp("git-base-counts");
+        if !init_stacked_repo(&repo.0) {
+            return;
+        }
+        let default = git_diff_index_for(&repo.0, None);
+        assert_eq!(default.base.as_deref(), Some("main"));
+        assert_eq!(default.ahead_of_base, 2);
+        assert_eq!(default.branch_files, 2);
+        assert_eq!(default.branch_additions, 2);
+
+        let stacked = git_diff_index_for(&repo.0, Some("feature-a"));
+        assert_eq!(stacked.base.as_deref(), Some("feature-a"));
+        assert_eq!(stacked.base_ref.as_deref(), Some("feature-a"));
+        assert_eq!(stacked.base_error, None);
+        assert_eq!(stacked.ahead_of_base, 1);
+        assert_eq!(stacked.branch_files, 1);
+        assert_eq!(stacked.branch_additions, 1);
+        assert_eq!(stacked.branch_deletions, 0);
+        // Picking a base must not touch the checkout.
+        assert_eq!(stacked.branch.as_deref(), Some("feature-b"));
+    }
+
+    #[test]
+    fn git_diff_index_falls_back_from_a_deleted_base() {
+        let repo = tmp("git-base-fallback");
+        if !init_stacked_repo(&repo.0) {
+            return;
+        }
+        let index = git_diff_index_for(&repo.0, Some("gone"));
+        assert_eq!(index.base.as_deref(), Some("main"));
+        assert_eq!(index.ahead_of_base, 2);
+        let error = index.base_error.unwrap_or_default();
+        assert!(error.contains("gone"), "{error}");
+    }
+
+    #[test]
+    fn git_range_context_ignores_base_commits_made_after_the_fork() {
+        let repo = tmp("git-base-three-dot");
+        if !init_git_commit(&repo.0, &[("a.txt", "alpha\n")])
+            || !git(&repo.0, &["checkout", "-b", "feature"])
+        {
+            return;
+        }
+        std::fs::write(repo.0.join("feature.txt"), "feature\n").unwrap();
+        if !git(&repo.0, &["add", "."])
+            || !git(&repo.0, &["commit", "-m", "feature work"])
+            || !git(&repo.0, &["checkout", "main"])
+        {
+            return;
+        }
+        std::fs::write(repo.0.join("main.txt"), "main\n").unwrap();
+        if !git(&repo.0, &["add", "."])
+            || !git(&repo.0, &["commit", "-m", "main moved on"])
+            || !git(&repo.0, &["checkout", "feature"])
+        {
+            return;
+        }
+        let range = git_range_context_for(&repo.0, None).unwrap();
+        assert!(range.diff_patch.contains("feature.txt"));
+        // Two-dot would report main.txt as a deletion this branch introduced.
+        assert!(
+            !range.diff_patch.contains("main.txt"),
+            "{}",
+            range.diff_patch
+        );
+        assert!(!range.commit_summary.contains("main moved on"));
+        assert_eq!(git_diff_index_for(&repo.0, None).branch_files, 1);
     }
 
     #[test]
@@ -4834,8 +5098,8 @@ mod tests {
             std::fs::read_to_string(b.0.join("a.txt")).unwrap(),
             "beta\n"
         );
-        assert_eq!(git_diff_index_for(&b.0).ahead, 0);
-        assert_eq!(git_diff_index_for(&b.0).behind, 0);
+        assert_eq!(git_diff_index_for(&b.0, None).ahead, 0);
+        assert_eq!(git_diff_index_for(&b.0, None).behind, 0);
 
         std::fs::write(b.0.join("b.txt"), "from-b\n").unwrap();
         git_stage_file_for(&b.0, "b.txt").unwrap();
