@@ -28,6 +28,7 @@ import {
   type Session,
   type TurnIntent,
 } from "../lib/session";
+import type { SessionCheckout } from "../lib/sessionCheckout";
 import { AgentTranscript } from "./AgentTranscript";
 import { EmptySession } from "./EmptySession";
 import { MOD } from "../lib/platform";
@@ -57,6 +58,7 @@ type Props = {
   onClose: (sessionId: string) => void;
   onCwdChange: (sessionId: string, cwd: string) => void;
   onBranchChange: (sessionId: string) => void;
+  onCheckoutChange: (sessionId: string, checkout: SessionCheckout) => void;
   onModelChange: (sessionId: string, harness: HarnessId, model: string) => void;
   onModelSettingsChange: (
     sessionId: string,
@@ -134,6 +136,7 @@ export const SessionPane = memo(function SessionPane({
   onClose,
   onCwdChange,
   onBranchChange,
+  onCheckoutChange,
   onModelChange,
   onModelSettingsChange,
   onRuntimeModeChange,
@@ -258,6 +261,15 @@ export const SessionPane = memo(function SessionPane({
         (hideProjectPicker ? !showDeckProjectPicker : false)
       }
       hideBranchPicker={!!session.inboxAsk}
+      worktreeCwd={session.worktreeCwd}
+      // The checkout is a session-creation choice: once a turn has run, the
+      // harness child and its transcript are rooted in that directory and the
+      // picker goes away rather than silently moving them.
+      onCheckoutChange={
+        isEmpty && !session.inboxAsk && looksLikeProject(session.cwd)
+          ? (checkout) => onCheckoutChange(session.id, checkout)
+          : undefined
+      }
       hideTopBar={!!session.inboxAsk}
       context={session.context}
       quoteRequest={quoteRequest}

@@ -275,15 +275,79 @@ export function isCheckoutBlockedByChanges(message: string): boolean {
   );
 }
 
-/** Drop leftover session-worktree pins. The composer now switches this folder. */
-export function restoreSessionCheckout<
-  T extends { cwd: string; branch?: string; worktreeCwd?: string; providerSessionId?: string },
->(session: T): T {
+export type GitWorktreeEntry = {
+  path: string;
+  branch: string | null;
+  /** The repository's primary working tree. */
+  main: boolean;
+  /** Registered, but its directory is gone from disk. */
+  prunable: boolean;
+  locked: boolean;
+};
+
+export type GitWorktreeList = {
+  entries: GitWorktreeEntry[];
+  /** Folder a new worktree would be created in, or null outside a repo. */
+  parent: string | null;
+};
+
+export function gitWorktrees(cwd: string): Promise<GitWorktreeList> {
+  return invoke<GitWorktreeList>("git_worktrees", { cwd });
+}
+
+/**
+ * Create a linked worktree on a new branch. Never moves the main checkout's
+ * HEAD, so a rejected name or start point leaves this folder untouched.
+ */
+export function gitWorktreeCreate(
+  cwd: string,
+  branch: string,
+  startRef?: string | null,
+): Promise<GitWorktreeEntry> {
+  return invoke<GitWorktreeEntry>("git_worktree_create", {
+    cwd,
+    branch,
+    startRef: startRef ?? null,
+  });
+}
+
+/** True while `path` is still a working tree of the repository at `cwd`. */
+export function gitWorktreeVerify(cwd: string, path: string): Promise<boolean> {
+  return invoke<boolean>("git_worktree_verify", { cwd, path });
+}
+
+/**
+ * Re-bind a restored session to the checkout it was started in.
+ *
+ * A session picks its working directory once, at creation, so the pin has to
+ * survive restarts. It is only dropped when the worktree is really gone —
+ * falling back to the main checkout beats resuming a harness in a directory
+ * that no longer exists. `branch` is a leftover of the removed implicit
+ * session-branch feature and is always cleared.
+ */
+export async function restoreSessionCheckout<
+  T extends {
+    cwd: string;
+    branch?: string;
+    worktreeCwd?: string;
+    providerSessionId?: string;
+  },
+>(session: T): Promise<T> {
   if (!session.branch && !session.worktreeCwd) return session;
+  const keep =
+    session.worktreeCwd != null &&
+    (await gitWorktreeVerify(session.cwd, session.worktreeCwd).catch(
+      () => false,
+    ));
+  if (keep) {
+    return session.branch ? { ...session, branch: undefined } : session;
+  }
   return {
     ...session,
     branch: undefined,
     worktreeCwd: undefined,
+    // The harness child was bound to a directory that is gone; a fresh
+    // provider session avoids resuming a conversation rooted there.
     ...(session.worktreeCwd ? { providerSessionId: undefined } : {}),
   };
 }

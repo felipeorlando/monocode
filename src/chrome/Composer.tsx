@@ -88,7 +88,9 @@ import { ComposerRunner } from "./ComposerRunner";
 import { ContextMeter } from "./ContextMeter";
 import { AttachmentChip } from "./AttachmentChip";
 import { BranchPicker } from "./BranchPicker";
+import { CheckoutPicker } from "./CheckoutPicker";
 import { CwdPicker } from "./CwdPicker";
+import type { SessionCheckout } from "../lib/sessionCheckout";
 import { FileMentionPicker } from "./FileMentionPicker";
 import { FileTypeIcon } from "./FileTypeIcon";
 import { InboxMiniCard } from "./InboxMiniCard";
@@ -137,6 +139,11 @@ type Props = {
   recents?: RecentProject[];
   hideProjectPicker?: boolean;
   hideBranchPicker?: boolean;
+  /**
+   * Linked worktree this session runs in. Only meaningful together with
+   * `onCheckoutChange`, which is what turns the checkout picker on.
+   */
+  worktreeCwd?: string;
   hideTopBar?: boolean;
   context?: ContextUsage;
   compactSupported?: boolean;
@@ -153,6 +160,8 @@ type Props = {
   onFocus: () => void;
   onCwdChange: (cwd: string) => void;
   onBranchChange?: () => void;
+  /** Absent once the session has run a turn: the checkout is chosen once. */
+  onCheckoutChange?: (checkout: SessionCheckout) => void;
   onNewTerminal?: () => void;
   onModelChange: (harness: HarnessId, model: string) => void;
   onModelSettingsChange?: (settings: Record<string, string>) => void;
@@ -391,6 +400,7 @@ export function Composer({
   recents = [],
   hideProjectPicker = false,
   hideBranchPicker = false,
+  worktreeCwd,
   hideTopBar = false,
   context,
   compactSupported = false,
@@ -406,6 +416,7 @@ export function Composer({
   onFocus,
   onCwdChange,
   onBranchChange,
+  onCheckoutChange,
   onNewTerminal,
   onModelChange,
   onModelSettingsChange,
@@ -1171,9 +1182,20 @@ export function Composer({
                   onClose={() => ref.current?.focus()}
                 />
               )}
+              {onCheckoutChange ? (
+                <CheckoutPicker
+                  cwd={cwd}
+                  worktreeCwd={worktreeCwd}
+                  enabled={enabled && !busy}
+                  onChange={onCheckoutChange}
+                  onClose={() => ref.current?.focus()}
+                />
+              ) : null}
               {hideBranchPicker ? null : (
                 <BranchPicker
-                  cwd={cwd}
+                  // Scoped to the working copy this session actually runs in, so
+                  // a worktree session never moves the main checkout's branch.
+                  cwd={executionCwd}
                   branch={branch}
                   enabled={enabled && !busy}
                   onChange={onBranchChange}
