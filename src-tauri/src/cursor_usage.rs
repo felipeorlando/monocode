@@ -188,13 +188,7 @@ fn decode_utf16le(bytes: &[u8]) -> Option<String> {
         .chunks_exact(2)
         .all(|pair| (1..128).contains(&pair[0]) && pair[1] == 0);
     if !ascii_utf16le {
-        return String::from_utf16(
-            &bytes
-                .chunks_exact(2)
-                .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
-                .collect::<Vec<_>>(),
-        )
-        .ok();
+        return None;
     }
     String::from_utf16(
         &bytes
@@ -369,5 +363,34 @@ mod tests {
             })
             .unwrap();
         assert_eq!(blob.as_deref(), Some("utf16-token"));
+    }
+
+    #[test]
+    fn even_length_utf8_jwt_blob_falls_back_to_utf8() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute(
+                "CREATE TABLE ItemTable (key TEXT PRIMARY KEY, value BLOB)",
+                [],
+            )
+            .unwrap();
+        // Even-length ASCII JWT: naive UTF-16LE decoding would mojibake it.
+        let token = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1In0.sig";
+        assert_eq!(token.len() % 2, 0);
+        assert_eq!(decode_utf16le(token.as_bytes()), None);
+        connection
+            .execute(
+                "INSERT INTO ItemTable (key, value) VALUES (?1, ?2)",
+                params!["cursorAuth/accessToken", token.as_bytes()],
+            )
+            .unwrap();
+        let decoded = connection
+            .query_row(
+                "SELECT value FROM ItemTable WHERE key = ?1",
+                params!["cursorAuth/accessToken"],
+                |row| Ok(decode_sqlite_text(row.get_ref(0)?)),
+            )
+            .unwrap();
+        assert_eq!(decoded.as_deref(), Some(token));
     }
 }

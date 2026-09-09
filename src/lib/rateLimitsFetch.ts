@@ -8,6 +8,7 @@ import {
   parseGrokBilling,
   unavailableRateLimits,
   type ProviderRateLimits,
+  type RateLimitProvider,
 } from "./rateLimits";
 import {
   killChild,
@@ -30,11 +31,19 @@ type UsageFetch = {
   error?: string | null;
 };
 
-export async function fetchClaudeRateLimits(): Promise<ProviderRateLimits> {
+type InvokeUsageProvider = Exclude<RateLimitProvider, "codex">;
+
+async function fetchInvokeRateLimits(
+  command: string,
+  provider: InvokeUsageProvider,
+  parse: (body: string) => ProviderRateLimits,
+  unavailableMessage: string,
+  errorMessage: string,
+): Promise<ProviderRateLimits> {
   try {
-    const result = await invoke<UsageFetch>("fetch_claude_usage");
+    const result = await invoke<UsageFetch>(command);
     if (result.status === "ok" && result.body) {
-      const parsed = parseClaudeOAuthUsage(result.body);
+      const parsed = parse(result.body);
       if (parsed.session || parsed.weekly) return parsed;
       return {
         ...parsed,
@@ -43,78 +52,47 @@ export async function fetchClaudeRateLimits(): Promise<ProviderRateLimits> {
     }
     if (result.status === "unavailable") {
       return unavailableRateLimits(
-        "claude",
-        result.error?.trim() || "Claude not signed in",
+        provider,
+        result.error?.trim() || unavailableMessage,
       );
     }
-    return errorRateLimits(
-      "claude",
-      result.error?.trim() || "Claude usage unavailable",
-    );
+    return errorRateLimits(provider, result.error?.trim() || errorMessage);
   } catch (error) {
     return errorRateLimits(
-      "claude",
-      error instanceof Error ? error.message : "Claude usage unavailable",
+      provider,
+      error instanceof Error ? error.message : errorMessage,
     );
   }
+}
+
+export async function fetchClaudeRateLimits(): Promise<ProviderRateLimits> {
+  return fetchInvokeRateLimits(
+    "fetch_claude_usage",
+    "claude",
+    parseClaudeOAuthUsage,
+    "Claude not signed in",
+    "Claude usage unavailable",
+  );
 }
 
 export async function fetchCursorRateLimits(): Promise<ProviderRateLimits> {
-  try {
-    const result = await invoke<UsageFetch>("fetch_cursor_usage");
-    if (result.status === "ok" && result.body) {
-      const parsed = parseCursorUsageSummary(result.body);
-      if (parsed.session || parsed.weekly) return parsed;
-      return {
-        ...parsed,
-        status: parsed.status === "ok" ? "ok" : parsed.status,
-      };
-    }
-    if (result.status === "unavailable") {
-      return unavailableRateLimits(
-        "cursor",
-        result.error?.trim() || "Cursor not signed in",
-      );
-    }
-    return errorRateLimits(
-      "cursor",
-      result.error?.trim() || "Cursor usage unavailable",
-    );
-  } catch (error) {
-    return errorRateLimits(
-      "cursor",
-      error instanceof Error ? error.message : "Cursor usage unavailable",
-    );
-  }
+  return fetchInvokeRateLimits(
+    "fetch_cursor_usage",
+    "cursor",
+    parseCursorUsageSummary,
+    "Cursor not signed in",
+    "Cursor usage unavailable",
+  );
 }
 
 export async function fetchGrokRateLimits(): Promise<ProviderRateLimits> {
-  try {
-    const result = await invoke<UsageFetch>("fetch_grok_usage");
-    if (result.status === "ok" && result.body) {
-      const parsed = parseGrokBilling(result.body);
-      if (parsed.session || parsed.weekly) return parsed;
-      return {
-        ...parsed,
-        status: parsed.status === "ok" ? "ok" : parsed.status,
-      };
-    }
-    if (result.status === "unavailable") {
-      return unavailableRateLimits(
-        "grok",
-        result.error?.trim() || "Grok not signed in",
-      );
-    }
-    return errorRateLimits(
-      "grok",
-      result.error?.trim() || "Grok usage unavailable",
-    );
-  } catch (error) {
-    return errorRateLimits(
-      "grok",
-      error instanceof Error ? error.message : "Grok usage unavailable",
-    );
-  }
+  return fetchInvokeRateLimits(
+    "fetch_grok_usage",
+    "grok",
+    parseGrokBilling,
+    "Grok not signed in",
+    "Grok usage unavailable",
+  );
 }
 
 export async function fetchCodexRateLimits(): Promise<ProviderRateLimits> {
