@@ -1,5 +1,5 @@
 import { ArrowDownCircle, Loader } from "./icons";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   installPendingUpdate,
   probeForUpdate,
@@ -99,10 +99,18 @@ export function SidebarUpdate({
   onSnapshot: (next: UpdaterSnapshot) => void;
 }) {
   const busy = snapshot.phase === "downloading";
+  // `busy` only flips after installPendingUpdate awaits readAppVersion, so a
+  // second click can still land. The ref closes that window immediately.
+  const installing = useRef(false);
 
   const onClick = useCallback(async () => {
-    if (busy) return;
-    await installPendingUpdate(onSnapshot);
+    if (busy || installing.current) return;
+    installing.current = true;
+    try {
+      await installPendingUpdate(onSnapshot);
+    } finally {
+      installing.current = false;
+    }
   }, [busy, onSnapshot]);
 
   const label = busy

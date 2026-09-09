@@ -1,12 +1,16 @@
-import { createElement } from "react";
+import { createElement, type ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
-import type { UpdaterPhase } from "../lib/updater";
+import type { UpdaterPhase, UpdaterSnapshot } from "../lib/updater";
 import {
   SidebarUpdate,
   SidebarUpdateFooter,
   isSidebarUpdateActionable,
 } from "./SidebarUpdate";
+
+const updaterMocks = vi.hoisted(() => ({
+  installPendingUpdate: vi.fn(),
+}));
 
 // The updater module reaches for Tauri plugins at import time; stub them so the
 // component under test can be imported in the plain node environment.
@@ -17,6 +21,34 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({
 }));
 vi.mock("@tauri-apps/plugin-process", () => ({ relaunch: vi.fn() }));
 vi.mock("@tauri-apps/plugin-updater", () => ({ check: vi.fn() }));
+vi.mock("../lib/updater", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../lib/updater")>();
+  return {
+    ...actual,
+    installPendingUpdate: (
+      ...args: Parameters<typeof actual.installPendingUpdate>
+    ) => updaterMocks.installPendingUpdate(...args),
+  };
+});
+
+function installButtonClick() {
+  let onClick: (() => void) | undefined;
+  function Capture() {
+    const tree = SidebarUpdate({
+      snapshot: {
+        phase: "available",
+        currentVersion: "0.1.37",
+        availableVersion: "0.1.38",
+      },
+      onSnapshot: vi.fn(),
+    }) as ReactElement<{ onClick: () => void }>;
+    onClick = tree.props.onClick;
+    return tree;
+  }
+  renderToStaticMarkup(createElement(Capture));
+  if (!onClick) throw new Error("expected the install button handler");
+  return onClick;
+}
 
 describe("isSidebarUpdateActionable", () => {
   it("only claims sidebar space for an update the user can act on", () => {
@@ -68,6 +100,34 @@ describe("SidebarUpdate", () => {
 
     expect(markup).toContain("Downloading 42%");
     expect(markup).toContain('disabled=""');
+  });
+
+  it("ignores a second click while readAppVersion is still pending", async () => {
+    // installPendingUpdate awaits readAppVersion before it reports "downloading",
+    // so a second click can still land while `busy` is false. The hanging mock
+    // is that window.
+    let releaseVersionRead!: (snapshot: UpdaterSnapshot) => void;
+    updaterMocks.installPendingUpdate.mockReset();
+    updaterMocks.installPendingUpdate.mockImplementation(
+      () =>
+        new Promise<UpdaterSnapshot>((resolve) => {
+          releaseVersionRead = resolve;
+        }),
+    );
+
+    const onClick = installButtonClick();
+    const first = Promise.resolve(onClick());
+    const second = Promise.resolve(onClick());
+
+    expect(updaterMocks.installPendingUpdate).toHaveBeenCalledOnce();
+
+    releaseVersionRead({
+      phase: "downloading",
+      currentVersion: "0.1.37",
+      availableVersion: "0.1.38",
+    });
+    await Promise.all([first, second]);
+    expect(updaterMocks.installPendingUpdate).toHaveBeenCalledOnce();
   });
 });
 
