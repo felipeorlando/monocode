@@ -42,6 +42,7 @@ import {
   notifyGitChanged,
   pickFolder,
   restoreSessionCheckout,
+  type GitFileDiffKind,
   type GitHistoryCommit,
 } from "./lib/fs";
 import {
@@ -275,6 +276,7 @@ import {
   setWindowFocused,
 } from "./lib/notifications";
 import { playCue } from "./lib/sounds";
+import { archiveFocusedSession } from "./lib/archiveShortcut";
 import {
   adjacentItemId,
   deferUnhandledEscape,
@@ -2313,7 +2315,11 @@ export default function App({
   );
 
   const onOpenDiff = useCallback(
-    (path?: string, session?: { sessionId: string; cwd: string }) => {
+    (
+      path?: string,
+      session?: { sessionId: string; cwd: string },
+      changeKind?: GitFileDiffKind,
+    ) => {
       void (async () => {
         const diffCwd = session?.cwd ?? gitCwdRef.current;
         const resolved = path
@@ -2332,12 +2338,17 @@ export default function App({
               );
             }
             if (loadDiffViewer() === "unified") {
-              return openChangesTab(tab, sidebarCwdRef.current, resolved);
+              return openChangesTab(
+                tab,
+                sidebarCwdRef.current,
+                resolved,
+                changeKind,
+              );
             }
             if (!resolved) return tab;
             return openEditorTab(
               tab,
-              newFileTab(resolved, sidebarCwdRef.current, true),
+              newFileTab(resolved, sidebarCwdRef.current, true, changeKind),
             );
           }),
         );
@@ -2347,6 +2358,23 @@ export default function App({
     },
     [activeTabId],
   );
+
+  const onOpenWorkingTreeDiff = useCallback(
+    (path: string, kind?: GitFileDiffKind) => onOpenDiff(path, undefined, kind),
+    [onOpenDiff],
+  );
+
+  /** Stack every working-tree change in one review, whatever the diff-view setting. */
+  const onOpenAllChanges = useCallback(() => {
+    setTabs((prev) =>
+      prev.map((tab) =>
+        tab.id === activeTabId
+          ? openChangesTab(tab, sidebarCwdRef.current)
+          : tab,
+      ),
+    );
+    setComposerFocused(false);
+  }, [activeTabId]);
 
   const onOpenCommit = useCallback(
     (commit: GitHistoryCommit) => {
@@ -2866,6 +2894,32 @@ export default function App({
       }
     },
     [onRemoveHistorySession],
+  );
+
+  const onArchiveFocusedSession = useCallback(
+    (event: KeyboardEvent) => {
+      archiveFocusedSession(
+        event,
+        {
+          activeTabId: activeTabIdRef.current,
+          tabs: tabsRef.current,
+          sessions: sessionsRef.current,
+          projectTerminalFocused: projectTerminalFocusedRef.current,
+          surfaceOpen: Boolean(
+            searchViewOpenRef.current ||
+            inboxViewOpenRef.current ||
+            notesViewOpenRef.current ||
+            settingsOpenRef.current ||
+            filePickerOpenRef.current ||
+            whatsNewVersionRef.current,
+          ),
+        },
+        (sessionId) => {
+          void onArchiveHistorySession(sessionId, true);
+        },
+      );
+    },
+    [onArchiveHistorySession],
   );
 
   const onPinHistorySession = useCallback(
@@ -4703,6 +4757,7 @@ export default function App({
 
   const actions = useRef({
     onNew,
+    onArchiveFocusedSession,
     onCloseOtherTabs,
     onClosePane,
     onNext,
@@ -4729,6 +4784,7 @@ export default function App({
   });
   actions.current = {
     onNew,
+    onArchiveFocusedSession,
     onCloseOtherTabs,
     onClosePane,
     onNext,
@@ -4787,6 +4843,10 @@ export default function App({
       }
       const cmd = tabCommand(e);
       if (cmd) {
+        if (cmd === "archive-session") {
+          actions.current.onArchiveFocusedSession(e);
+          return;
+        }
         const target = e.target instanceof Element ? e.target : null;
         const listNavigation =
           cmd === "prev-session" ||
@@ -5122,12 +5182,14 @@ export default function App({
         canGoForward={tabVisitNav.canForward}
         onGoBack={onRailBack}
         onGoForward={onRailForward}
-        onOpenDiff={onOpenDiff}
+        onOpenDiff={onOpenWorkingTreeDiff}
+        onOpenAllChanges={onOpenAllChanges}
         onOpenCommit={onOpenCommit}
         onShowSourceControl={onToggleChanges}
         selectedDiffPath={
           activeTab ? selectedChangePath(activeTab, gitCwd) : undefined
         }
+        selectedDiffKind={activeTab ? selectedChangeKind(activeTab) : undefined}
         selectedCommitSha={activeTab ? selectedCommitSha(activeTab) : undefined}
         textHarness={pickTextHarness(active?.harness)}
         recents={recents}
@@ -5475,6 +5537,11 @@ function selectedChangePath(
   const file = focusedFileTab(tab);
   if (!file || !isFilesystemTab(file) || !file.review) return undefined;
   return displayPath(file.path, gitCwd || file.cwd);
+}
+
+function selectedChangeKind(tab: WorkspaceTab): GitFileDiffKind | undefined {
+  const file = focusedFileTab(tab);
+  return file?.review ? file.changeKind : undefined;
 }
 
 function selectedCommitSha(tab: WorkspaceTab): string | undefined {

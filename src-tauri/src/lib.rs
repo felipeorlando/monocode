@@ -1,5 +1,6 @@
 use tauri::Manager;
 
+mod chat_background;
 mod checkpoint;
 mod cursor_store;
 mod fs;
@@ -300,6 +301,8 @@ pub fn run() {
             notes::notes_get,
             notes::notes_upsert,
             notes::notes_delete,
+            notes::notes_save_image,
+            notes::notes_image_path,
             checkpoint::session_checkpoint_ensure,
             checkpoint::session_checkpoint_prepare,
             checkpoint::session_checkpoint_capture,
@@ -314,9 +317,13 @@ pub fn run() {
             window::hide_window,
             window::destroy_window,
             window::confirm_quit,
-            window::enable_window_glass,
+            window::set_window_glass_enabled,
             window_transfer::stage_window_transfer,
             window_transfer::take_window_transfer,
+            chat_background::save_chat_background,
+            chat_background::remove_chat_background,
+            chat_background::save_project_chat_background,
+            chat_background::remove_project_chat_background,
             project_logo::save_project_logo,
             project_logo::remove_project_logo,
             project_logo::forget_logo_file,
