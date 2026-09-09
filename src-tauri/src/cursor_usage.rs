@@ -137,11 +137,11 @@ pub(crate) fn cursor_state_db_path_for(home: &str) -> PathBuf {
     let home = Path::new(home);
     #[cfg(target_os = "macos")]
     {
-        return home.join("Library/Application Support/Cursor/User/globalStorage/state.vscdb");
+        home.join("Library/Application Support/Cursor/User/globalStorage/state.vscdb")
     }
     #[cfg(target_os = "windows")]
     {
-        return home.join("AppData/Roaming/Cursor/User/globalStorage/state.vscdb");
+        home.join("AppData/Roaming/Cursor/User/globalStorage/state.vscdb")
     }
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
