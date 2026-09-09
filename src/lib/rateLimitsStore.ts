@@ -218,7 +218,13 @@ export function setRateLimitProviders(providers: RateLimitProvider[]) {
 
 export function refreshRateLimits(force = false): Promise<void> | undefined {
   ensureStarted();
-  if (inflight) return inflight;
+  if (inflight) {
+    if (!force) return inflight;
+    if (!snapshot.refreshing) replace({ ...snapshot, refreshing: true });
+    return inflight.then(async () => {
+      await refreshRateLimits(true);
+    });
+  }
   const visible = isVisible();
   const pending = RATE_LIMIT_PROVIDERS.filter(
     (provider) =>

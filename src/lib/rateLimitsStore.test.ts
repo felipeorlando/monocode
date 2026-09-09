@@ -82,6 +82,32 @@ describe("rateLimitsStore", () => {
     stopAgain();
   });
 
+  it("queues a forced refresh after an in-flight poll", async () => {
+    let release: ((value: ProviderRateLimits) => void) | undefined;
+    const first = new Promise<ProviderRateLimits>((resolve) => {
+      release = resolve;
+    });
+    const claude = vi
+      .fn()
+      .mockImplementationOnce(() => first)
+      .mockImplementationOnce(async () => okLimits("claude", 99));
+    setRateLimitFetchersForTests({
+      claude,
+      codex: vi.fn(async () => idleRateLimits("codex")),
+      cursor: vi.fn(async () => idleRateLimits("cursor")),
+      grok: vi.fn(async () => idleRateLimits("grok")),
+    });
+    subscribeRateLimits(() => undefined);
+    setRateLimitProviders(["claude"]);
+    const forced = refreshRateLimits(true);
+    expect(getRateLimitsSnapshot().refreshing).toBe(true);
+    release?.(okLimits("claude", 12));
+    await forced;
+    expect(claude).toHaveBeenCalledTimes(2);
+    expect(getRateLimitsSnapshot().claude.session?.usedPercent).toBe(99);
+    expect(getRateLimitsSnapshot().refreshing).toBe(false);
+  });
+
   it("skips a fetch when another window holds the lock", async () => {
     const claude = vi.fn(async () => okLimits("claude", 12));
     setRateLimitFetchersForTests({
