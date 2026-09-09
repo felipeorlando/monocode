@@ -244,6 +244,43 @@ export function subscribeGridArcadeEnabled(onStoreChange: () => void) {
     window.removeEventListener(GRID_ARCADE_ENABLED_CHANGE_EVENT, onStoreChange);
 }
 
+const ALWAYS_SHOW_USAGE_KEY = "monocode.alwaysShowUsage";
+
+export const ALWAYS_SHOW_USAGE_DEFAULT = false;
+
+/** Fired on `window` when the always-show provider usage setting flips. */
+export const ALWAYS_SHOW_USAGE_CHANGE_EVENT =
+  "monocode:always-show-usage-change";
+
+export function loadAlwaysShowUsage(): boolean {
+  try {
+    const raw = localStorage.getItem(ALWAYS_SHOW_USAGE_KEY);
+    if (raw == null) return ALWAYS_SHOW_USAGE_DEFAULT;
+    return raw === "1" || raw === "true";
+  } catch {
+    return ALWAYS_SHOW_USAGE_DEFAULT;
+  }
+}
+
+export function saveAlwaysShowUsage(value: boolean) {
+  try {
+    localStorage.setItem(ALWAYS_SHOW_USAGE_KEY, value ? "1" : "0");
+  } catch {
+    // private mode / quota
+  }
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(
+    new CustomEvent<boolean>(ALWAYS_SHOW_USAGE_CHANGE_EVENT, { detail: value }),
+  );
+}
+
+export function subscribeAlwaysShowUsage(onStoreChange: () => void) {
+  if (typeof window === "undefined") return () => {};
+  window.addEventListener(ALWAYS_SHOW_USAGE_CHANGE_EVENT, onStoreChange);
+  return () =>
+    window.removeEventListener(ALWAYS_SHOW_USAGE_CHANGE_EVENT, onStoreChange);
+}
+
 const DIFF_VIEWER_KEY = "monocode.diffViewer";
 
 export type DiffViewer = "editor" | "unified";
@@ -345,6 +382,11 @@ export const KEYBINDINGS: KeybindingRow[] = [
   { command: "Tab: Forward", keys: `${MOD}]`, when: "Always" },
   { command: "Tab: Activate 1–8", keys: `${MOD}1 … ${MOD}8`, when: "Always" },
   { command: "Tab: Activate Last", keys: `${MOD}9`, when: "Always" },
+  {
+    command: "Session: Archive",
+    keys: `${MOD}${SHIFT}A`,
+    when: "sessionFocus && !overlay",
+  },
   {
     command: "Session: Previous",
     keys: `${MOD}${SHIFT}↑`,

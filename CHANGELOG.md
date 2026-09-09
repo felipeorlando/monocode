@@ -7,6 +7,70 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.41] - 2026-09-09
+
+### Added
+
+- OMP models support fast mode, including live RPC and configuration updates with a clear fallback when a model does not support it.
+
+### Changed
+
+- The file explorer avoids unnecessary rerenders and preserves unchanged file-icon DOM for smoother updates.
+- The Changes panel header consistently shows its label instead of replacing it with diff counts.
+
+### Fixed
+
+- The sidebar update control stays hidden when no update is available and prevents duplicate installs from concurrent clicks. In #132 by @fobsouza.
+
+## [0.1.40] - 2026-09-08
+
+### Added
+
+- Working-tree reviews now separate staged changes against `HEAD` from unstaged changes against the index, including partially staged files.
+- The Changes panel can organize files into a collapsible directory tree, remembers the selected list or tree view, and can open every change in one review.
+
+### Fixed
+
+- Code block syntax highlighting follows MonoCode's appearance preference instead of the system color scheme. In #117 by @kartava.
+- Split conversation panes share one continuous chat background instead of repeating the image in every pane.
+- Project search safely treats include filters beginning with `-` as path patterns instead of Git options. In #125 by @Karajelly.
+- Release publishing validates and uploads the expected versioned artifacts for every supported platform.
+
+## [0.1.39] - 2026-09-08
+
+### Added
+
+- Windows releases now check for, download, and install signed updates through the same in-app update flow as macOS.
+
+### Changed
+
+- The prompt outline remains visible on slightly narrower windows.
+- Removed the scrolled transcript's top-edge fade and blur effect.
+
+## [0.1.38] - 2026-09-08
+
+### Added
+
+- The sidebar project picker is now searchable and keyboard navigable, shows each project's parent path, and includes actions for opening a new project or starting a new tab.
+- Right-click a title-bar tab to close that tab, the other tabs, or every tab to its left or right. Bulk closing still protects unsaved files and running terminals.
+- Shift-click conversations in the sidebar to select several at once, then pin, unpin, archive, unarchive, move into or out of folders, or delete them together.
+- Settings → Appearance → Chat background adds an on-device image behind empty sessions or every conversation, with adjustable visibility. Each project can override the global image from its project-rail menu.
+- Long transcripts have a vertical prompt outline for jumping between turns. Hover or keyboard-focus a marker to preview its prompt and reply. In #90 by @kartava.
+- Drag image files into a note to copy them into MonoCode's local note storage and insert them into the note at the cursor.
+- Archive the focused conversation with Shift+Command/Ctrl+A. The shortcut stays out of editors, terminals, diffs, and open overlays. In #89 by @kualta.
+
+### Changed
+
+- Scrolled transcripts fade and blur smoothly beneath the title bar, and popover backdrops now use theme-aware tints.
+- Light mode uses an opaque native window for legibility, preserves the dark-mode glass settings, and gives the composer theme-specific shadows and send-button states.
+
+### Fixed
+
+- Enabling Sounds now plays the switch cue immediately. In #111 by @kartava.
+- Sidebar multi-selection clears reliably when its menu closes or the pointer moves outside the selected conversation cards.
+- Chat background changes appear across open session panes immediately, and the empty-session arcade stays hidden when a background is visible.
+- Composer keyboard handlers ignore active IME composition, preventing Enter, Escape, and picker actions from firing while composing text.
+
 ## [0.1.37] - 2026-09-07
 
 ### Fixed
