@@ -181,19 +181,20 @@ fn decode_sqlite_text(value: rusqlite::types::ValueRef<'_>) -> Option<String> {
 }
 
 fn decode_utf16le(bytes: &[u8]) -> Option<String> {
-    if bytes.len() < 2 || bytes.len() % 2 != 0 {
+    if bytes.len() < 2 || !bytes.len().is_multiple_of(2) {
         return None;
     }
-    let ascii_utf16le = bytes
-        .chunks_exact(2)
+    let (pairs, _) = bytes.as_chunks::<2>();
+    let ascii_utf16le = pairs
+        .iter()
         .all(|pair| (1..128).contains(&pair[0]) && pair[1] == 0);
     if !ascii_utf16le {
         return None;
     }
     String::from_utf16(
-        &bytes
-            .chunks_exact(2)
-            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+        &pairs
+            .iter()
+            .map(|pair| u16::from_le_bytes(*pair))
             .collect::<Vec<_>>(),
     )
     .ok()
@@ -243,7 +244,7 @@ fn jwt_payload(token: &str) -> Option<Value> {
     let mut encoded = payload.replace('-', "+").replace('_', "/");
     match encoded.len() % 4 {
         2 => encoded.push_str("=="),
-        3 => encoded.push_str("="),
+        3 => encoded.push('='),
         0 => {}
         _ => return None,
     }
