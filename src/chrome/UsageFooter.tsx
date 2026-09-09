@@ -1,24 +1,20 @@
 import { RefreshCw } from "./icons";
-import { Fragment, useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { HarnessIcon } from "./HarnessIcon";
 import { Popover } from "./Popover";
 import {
-  fetchClaudeRateLimits,
-  fetchCodexRateLimits,
-  fetchCursorRateLimits,
-  fetchGrokRateLimits,
-} from "../lib/rateLimitsFetch";
+  getRateLimitsSnapshot,
+  refreshRateLimits,
+  setRateLimitProviders,
+  subscribeRateLimits,
+} from "../lib/rateLimitsStore";
 import {
   clampUsedPercent,
-  fetchingRateLimits,
   formatRateLimitWindowChipLabel,
   formatUsagePercent,
-  idleRateLimits,
   sharedWindowResetLabel,
   isRateLimitProvider,
-  RATE_LIMIT_POLL_MS,
   rateLimitWindowTooltip,
-  shouldFetchProvider,
   type ProviderRateLimits,
   type RateLimitProvider,
   type RateLimitWindow,
@@ -48,113 +44,30 @@ export function UsageFooter({
   terminalOpen?: boolean;
   onToggleTerminal?: (fileId: string) => void;
 }) {
-  const wantClaude = providers.includes("claude");
-  const wantCodex = providers.includes("codex");
-  const wantCursor = providers.includes("cursor");
-  const wantGrok = providers.includes("grok");
-  const [claude, setClaude] = useState<ProviderRateLimits>(() =>
-    idleRateLimits("claude"),
+  const snapshot = useSyncExternalStore(
+    subscribeRateLimits,
+    getRateLimitsSnapshot,
+    getRateLimitsSnapshot,
   );
-  const [codex, setCodex] = useState<ProviderRateLimits>(() =>
-    idleRateLimits("codex"),
-  );
-  const [cursor, setCursor] = useState<ProviderRateLimits>(() =>
-    idleRateLimits("cursor"),
-  );
-  const [grok, setGrok] = useState<ProviderRateLimits>(() =>
-    idleRateLimits("grok"),
-  );
+  const claude = snapshot.claude;
+  const codex = snapshot.codex;
+  const cursor = snapshot.cursor;
+  const grok = snapshot.grok;
+  const refreshing = snapshot.refreshing;
   const [now, setNow] = useState(() => Date.now());
-  const [refreshing, setRefreshing] = useState(false);
-  const inflight = useRef<Promise<void> | null>(null);
-  const claudeRef = useRef(claude);
-  const codexRef = useRef(codex);
-  const cursorRef = useRef(cursor);
-  const grokRef = useRef(grok);
-  claudeRef.current = claude;
-  codexRef.current = codex;
-  cursorRef.current = cursor;
-  grokRef.current = grok;
-
-  const refresh = useCallback((force = false) => {
-    if (inflight.current) return inflight.current;
-    const visible = document.visibilityState === "visible";
-    const fetchClaude =
-      wantClaude &&
-      shouldFetchProvider(claudeRef.current, { force, visible });
-    const fetchCodex =
-      wantCodex &&
-      shouldFetchProvider(codexRef.current, { force, visible });
-    const fetchCursor =
-      wantCursor &&
-      shouldFetchProvider(cursorRef.current, { force, visible });
-    const fetchGrok =
-      wantGrok &&
-      shouldFetchProvider(grokRef.current, { force, visible });
-    if (!fetchClaude && !fetchCodex && !fetchCursor && !fetchGrok) return;
-    if (force) setRefreshing(true);
-    const jobs: Promise<void>[] = [];
-    if (fetchClaude) {
-      setClaude((current) => fetchingRateLimits("claude", current));
-      jobs.push(
-        fetchClaudeRateLimits().then((value) => {
-          setClaude(value);
-        }),
-      );
-    }
-    if (fetchCodex) {
-      setCodex((current) => fetchingRateLimits("codex", current));
-      jobs.push(
-        fetchCodexRateLimits().then((value) => {
-          setCodex(value);
-        }),
-      );
-    }
-    if (fetchCursor) {
-      setCursor((current) => fetchingRateLimits("cursor", current));
-      jobs.push(
-        fetchCursorRateLimits().then((value) => {
-          setCursor(value);
-        }),
-      );
-    }
-    if (fetchGrok) {
-      setGrok((current) => fetchingRateLimits("grok", current));
-      jobs.push(
-        fetchGrokRateLimits().then((value) => {
-          setGrok(value);
-        }),
-      );
-    }
-    const run = Promise.allSettled(jobs)
-      .then(() => undefined)
-      .finally(() => {
-        inflight.current = null;
-        setRefreshing(false);
-      });
-    inflight.current = run;
-    return run;
-  }, [wantClaude, wantCodex, wantCursor, wantGrok]);
 
   useEffect(() => {
-    void refresh();
-    const poll = window.setInterval(() => void refresh(), RATE_LIMIT_POLL_MS);
-    const onVisible = () => {
-      if (document.visibilityState === "visible") void refresh();
-    };
-    document.addEventListener("visibilitychange", onVisible);
-    return () => {
-      window.clearInterval(poll);
-      document.removeEventListener("visibilitychange", onVisible);
-    };
-  }, [refresh]);
+    setRateLimitProviders(providers);
+  }, [providers]);
+
+  const refresh = (force = false) => refreshRateLimits(force);
 
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), CLOCK_MS);
     return () => window.clearInterval(timer);
   }, []);
 
-  const showUsage = wantClaude || wantCodex || wantCursor || wantGrok;
+  const showUsage = providers.length > 0;
   const usageChips = providers
     .map((provider) =>
       provider === "claude"
