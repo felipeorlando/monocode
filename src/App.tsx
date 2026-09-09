@@ -237,6 +237,7 @@ import {
   type Attachment,
   type Block,
   type HarnessId,
+  type LinkedWorkItem,
   type PlanBuildTarget,
   type RuntimeMode,
   type PlanStatus,
@@ -254,6 +255,7 @@ import { dropContextWindow } from "./lib/contextUsage";
 import {
   deleteSession,
   getSession,
+  listLinkedSessions,
   listSessionsByProject,
   persistFingerprint,
   replaceInFlightSessions,
@@ -324,7 +326,12 @@ import type { InboxSessionPortal } from "./surfaces/InboxDiscussionPanel";
 import { inboxAskKey, inboxAskPrompt } from "./lib/inboxAsk";
 import { NotesView } from "./surfaces/NotesView";
 import { inboxComposerCard, type InboxItem } from "./lib/githubTasks";
+import {
+  linkedWorkItemFromInboxItem,
+  resolveLinkedWorkItem,
+} from "./lib/sessionWorkItem";
 import { linearIssueDetails, peekLinearIssueDetails } from "./lib/linear";
+import { gitlabWorkItemDetails, peekGitlabWorkItemDetails } from "./lib/gitlab";
 import { usageFooterProviders } from "./lib/rateLimits";
 import {
   ALWAYS_SHOW_USAGE_DEFAULT,
@@ -616,7 +623,9 @@ export default function App({
   const [searchViewOpen, setSearchViewOpen] = useState(false);
   const [searchViewFocusToken, setSearchViewFocusToken] = useState(0);
   const [inboxViewOpen, setInboxViewOpen] = useState(false);
-  const [inboxAskPortal, setInboxAskPortal] = useState<InboxSessionPortal | null>(null);
+  const [inboxTarget, setInboxTarget] = useState<LinkedWorkItem | null>(null);
+  const [inboxAskPortal, setInboxAskPortal] =
+    useState<InboxSessionPortal | null>(null);
   const openingInboxSessions = useRef(new Map<string, Promise<string>>());
   const [notesViewOpen, setNotesViewOpen] = useState(false);
   const notesEnabled = useSyncExternalStore(
@@ -652,6 +661,9 @@ export default function App({
     () => new Map(),
   );
   const [history, setHistory] = useState<SessionSummary[]>(() => bootHistory);
+  const [storedLinkedSessions, setStoredLinkedSessions] = useState<
+    SessionSummary[]
+  >(() => bootHistory.filter((session) => session.linkedWorkItem));
   /**
    * Projects whose rows are already in `history`. This has to be state, not a
    * ref: `sidebarCwd` is derived during render, so the frame that first shows
@@ -759,13 +771,12 @@ export default function App({
 
   const stopSessionForRemoval = useCallback(
     async (sessionId: string): Promise<Session | undefined> => {
-      const open = sessionsRef.current.find((session) => session.id === sessionId);
+      const open = sessionsRef.current.find(
+        (session) => session.id === sessionId,
+      );
       if (!open?.busy) return open;
 
-      turnGen.current.set(
-        sessionId,
-        (turnGen.current.get(sessionId) ?? 0) + 1,
-      );
+      turnGen.current.set(sessionId, (turnGen.current.get(sessionId) ?? 0) + 1);
       flushHarnessEvents();
       await Promise.all(
         sessionChildHarnesses(open).map((harness) =>
@@ -885,7 +896,9 @@ export default function App({
       (session) => activeTab && leafIds(activeTab.layout).includes(session.id),
     );
   const sessionDefaults = active ?? sessions[0];
-  const activeSkillContext = active ? nativeSkillContextForSession(active) : null;
+  const activeSkillContext = active
+    ? nativeSkillContextForSession(active)
+    : null;
   const activeSkillCwd = activeSkillContext?.cwd;
 
   useEffect(() => {
@@ -978,7 +991,9 @@ export default function App({
   }
   const approvalSessionIds = approvalSessionIdsRef.current;
 
-  const activeSessionId = inboxViewOpen ? inboxAskPortal?.sessionId : active?.id;
+  const activeSessionId = inboxViewOpen
+    ? inboxAskPortal?.sessionId
+    : active?.id;
   const activeSessionIdRef = useRef(activeSessionId);
   activeSessionIdRef.current = activeSessionId;
 
@@ -1139,6 +1154,21 @@ export default function App({
   }, [sidebarCwd, refreshHistory]);
 
   useEffect(() => {
+    if (!inboxViewOpen) return;
+    let cancelled = false;
+    void listLinkedSessions()
+      .then((rows) => {
+        if (!cancelled) setStoredLinkedSessions(rows);
+      })
+      .catch(() => {
+        // Already-loaded and live sessions still provide a useful fallback.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [inboxViewOpen]);
+
+  useEffect(() => {
     prefetchProjectFiles(sidebarCwd);
   }, [sidebarCwd]);
 
@@ -1147,7 +1177,8 @@ export default function App({
       !session ||
       !shouldPersistSession(session) ||
       removingSessionIds.current.has(session.id)
-    ) return;
+    )
+      return;
     const fingerprint = persistFingerprint(session);
     void upsertSession(session)
       .then((summary) => {
@@ -1430,10 +1461,12 @@ export default function App({
           item.provider === "linear"
             ? item.identifier?.trim() || `#${item.number}`
             : `#${item.number}`;
+        const linkedWorkItem = linkedWorkItemFromInboxItem(item);
         const session = {
           ...newDefaultSession(cwd, sessionDefaults?.runtimeMode),
           title: `${ref} ${item.title}`,
           inboxCard: inboxComposerCard(item, description),
+          ...(linkedWorkItem ? { linkedWorkItem } : {}),
         };
         const tab = newTab(session.id);
         setSessions((prev) => [...prev, session]);
@@ -2557,57 +2590,108 @@ export default function App({
     [refreshHistory, sidebarCwd],
   );
 
-  const onAskInboxItem = useCallback((item: InboxItem): Promise<string> => {
-    const key = inboxAskKey(item);
-    const pending = openingInboxSessions.current.get(key);
-    if (pending) return pending;
-    const opening = (async () => {
-      let session = sessionsRef.current.find(entry => entry.inboxAsk?.key === key);
-      if (!session) {
-        const candidate = item.projectPath || sidebarCwd;
-        const cwd = candidate && candidate !== "~" ? candidate : await invoke<string>("default_cwd");
-        const description = item.provider === "linear" && item.id
-          ? (peekLinearIssueDetails(item.id) ?? await linearIssueDetails(item.id)).body
-          : undefined;
-        session = {
-          ...newDefaultSession(cwd),
-          title: `Ask · ${item.title}`,
-          inboxAsk: { key, title: item.title, url: item.url, provider: item.provider, description },
-        };
-        sessionsRef.current = [...sessionsRef.current, session];
-        setSessions(sessionsRef.current);
-      }
-      return session.id;
-    })();
-    openingInboxSessions.current.set(key, opening);
-    void opening.then(
-      () => openingInboxSessions.current.delete(key),
-      () => openingInboxSessions.current.delete(key),
-    );
-    return opening;
-  }, [sidebarCwd]);
+  const onAskInboxItem = useCallback(
+    (item: InboxItem): Promise<string> => {
+      const key = inboxAskKey(item);
+      const pending = openingInboxSessions.current.get(key);
+      if (pending) return pending;
+      const opening = (async () => {
+        let session = sessionsRef.current.find(
+          (entry) => entry.inboxAsk?.key === key,
+        );
+        if (!session) {
+          const candidate = item.projectPath || sidebarCwd;
+          const cwd =
+            candidate && candidate !== "~"
+              ? candidate
+              : await invoke<string>("default_cwd");
+          const description =
+            item.provider === "linear" && item.id
+              ? (
+                  peekLinearIssueDetails(item.id) ??
+                  (await linearIssueDetails(item.id))
+                ).body
+              : item.provider === "gitlab" &&
+                  (item.kind === "issue" || item.kind === "pr")
+                ? (
+                    peekGitlabWorkItemDetails(
+                      item.projectPath,
+                      item.kind,
+                      item.number,
+                    ) ??
+                    (await gitlabWorkItemDetails(
+                      item.projectPath,
+                      item.kind,
+                      item.number,
+                    ))
+                  ).body
+                : undefined;
+          session = {
+            ...newDefaultSession(cwd),
+            title: `Ask · ${item.title}`,
+            inboxAsk: {
+              key,
+              title: item.title,
+              url: item.url,
+              provider: item.provider,
+              description,
+            },
+          };
+          sessionsRef.current = [...sessionsRef.current, session];
+          setSessions(sessionsRef.current);
+        }
+        return session.id;
+      })();
+      openingInboxSessions.current.set(key, opening);
+      void opening.then(
+        () => openingInboxSessions.current.delete(key),
+        () => openingInboxSessions.current.delete(key),
+      );
+      return opening;
+    },
+    [sidebarCwd],
+  );
 
-  const onRestartInboxAsk = useCallback(async (item: InboxItem): Promise<string> => {
-    const id = await onAskInboxItem(item);
-    const current = sessionsRef.current.find(session => session.id === id)!;
-    removingSessionIds.current.add(id);
-    try {
-      await stopSessionForRemoval(id);
-      await Promise.all(sessionChildHarnesses(current).map(harness => forgetHarnessSession(harness, id)));
-      const fresh = {
-        ...newSession(current.harness, current.cwd, current.model, current.runtimeMode, current.modelSettings),
-        title: current.title,
-        inboxAsk: current.inboxAsk,
-      };
-      const next = sessionsRef.current.map(session => session.id === id ? fresh : session);
-      sessionsRef.current = next;
-      setSessions(next);
-      setInboxAskPortal(portal => portal?.sessionId === id ? { ...portal, sessionId: fresh.id } : portal);
-      return fresh.id;
-    } finally {
-      removingSessionIds.current.delete(id);
-    }
-  }, [onAskInboxItem, stopSessionForRemoval]);
+  const onRestartInboxAsk = useCallback(
+    async (item: InboxItem): Promise<string> => {
+      const id = await onAskInboxItem(item);
+      const current = sessionsRef.current.find((session) => session.id === id)!;
+      removingSessionIds.current.add(id);
+      try {
+        await stopSessionForRemoval(id);
+        await Promise.all(
+          sessionChildHarnesses(current).map((harness) =>
+            forgetHarnessSession(harness, id),
+          ),
+        );
+        const fresh = {
+          ...newSession(
+            current.harness,
+            current.cwd,
+            current.model,
+            current.runtimeMode,
+            current.modelSettings,
+          ),
+          title: current.title,
+          inboxAsk: current.inboxAsk,
+        };
+        const next = sessionsRef.current.map((session) =>
+          session.id === id ? fresh : session,
+        );
+        sessionsRef.current = next;
+        setSessions(next);
+        setInboxAskPortal((portal) =>
+          portal?.sessionId === id
+            ? { ...portal, sessionId: fresh.id }
+            : portal,
+        );
+        return fresh.id;
+      } finally {
+        removingSessionIds.current.delete(id);
+      }
+    },
+    [onAskInboxItem, stopSessionForRemoval],
+  );
 
   useEffect(() => {
     if (!inboxAskPortal || !inboxViewOpen) return;
@@ -3633,7 +3717,10 @@ export default function App({
               cwd: workCwd,
               model: current.model,
               modelSettings: current.modelSettings,
-              text: inboxAskPrompt(rawCommand ? undefined : current.inboxAsk, prompt),
+              text: inboxAskPrompt(
+                rawCommand ? undefined : current.inboxAsk,
+                prompt,
+              ),
               attachments: prepared,
             });
           } catch (error: unknown) {
@@ -3764,21 +3851,37 @@ export default function App({
       );
 
       if (isFirstTurn && live && placeholderTitle) {
+        const titleMessage =
+          harnessText || attachments.map((file) => file.name).join(", ");
         void generateHarnessTitle(current.harness, {
           sessionId,
           cwd: workCwd,
-          message:
-            harnessText || attachments.map((file) => file.name).join(", "),
+          message: titleMessage,
         })
-          .then((title) => {
-            if (!title) return;
+          .then(async (generated) => {
+            const linkedWorkItem = await resolveLinkedWorkItem(
+              titleMessage,
+              workCwd,
+              generated?.workItem ?? null,
+            );
+            if (!generated && !linkedWorkItem) return;
             setSessions((prev) =>
               prev.map((s) => {
                 if (s.id !== sessionId) return s;
-                if (!canReplaceSessionTitle(s.title, s.harness, titleSeed)) {
-                  return s;
+                let next = s;
+                if (
+                  generated &&
+                  canReplaceSessionTitle(s.title, s.harness, titleSeed)
+                ) {
+                  next = {
+                    ...next,
+                    title: formatSessionTitle(s.harness, generated.title),
+                  };
                 }
-                return { ...s, title: formatSessionTitle(s.harness, title) };
+                if (linkedWorkItem && !next.linkedWorkItem) {
+                  next = { ...next, linkedWorkItem };
+                }
+                return next;
               }),
             );
           })
@@ -3883,14 +3986,17 @@ export default function App({
             modelSettings: current.modelSettings,
             runtimeMode: current.runtimeMode,
             intent,
-            text: inboxAskPrompt(rawCommand ? undefined : current.inboxAsk, wrap && !rawCommand
-              ? wrapHandoffPrompt(
-                  wrap.text,
-                  wrap.from,
-                  turnPrompt.trim() || CONTINUE_PROMPT,
-                  earlier,
-                )
-              : turnPrompt),
+            text: inboxAskPrompt(
+              rawCommand ? undefined : current.inboxAsk,
+              wrap && !rawCommand
+                ? wrapHandoffPrompt(
+                    wrap.text,
+                    wrap.from,
+                    turnPrompt.trim() || CONTINUE_PROMPT,
+                    earlier,
+                  )
+                : turnPrompt,
+            ),
             attachments: prepared,
             onEvent: (event) => {
               if (turnGen.current.get(sessionId) !== gen) return;
@@ -3959,7 +4065,9 @@ export default function App({
           // Next tick: the flush above has rendered by then, so the banner
           // quotes the reply's final text rather than the previous batch.
           window.setTimeout(() => {
-            const finished = sessionsRef.current.find((s) => s.id === sessionId);
+            const finished = sessionsRef.current.find(
+              (s) => s.id === sessionId,
+            );
             const visible = sessionId === activeSessionIdRef.current;
             const sent = finished
               ? notifySession(finished, "finished", visible)
@@ -4552,10 +4660,42 @@ export default function App({
       }),
     [history, projectBranches, sessions, sidebarCwd],
   );
+  const inboxRelatedSessions = useMemo(() => {
+    const byId = new Map<string, SessionSummary>();
+    for (const session of storedLinkedSessions) byId.set(session.id, session);
+    for (const session of history) {
+      if (session.linkedWorkItem) byId.set(session.id, session);
+    }
+    for (const session of sessions) {
+      if (session.inboxAsk || !session.linkedWorkItem) continue;
+      const current = byId.get(session.id);
+      const summary = summaryFromSession(session);
+      byId.set(
+        session.id,
+        current
+          ? {
+              ...current,
+              harness: summary.harness,
+              model: summary.model,
+              runtimeMode: summary.runtimeMode,
+              title: summary.title,
+              cwd: summary.cwd,
+              linkedWorkItem: summary.linkedWorkItem,
+            }
+          : summary,
+      );
+    }
+    return [...byId.values()].sort(
+      (a, b) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id),
+    );
+  }, [history, sessions, storedLinkedSessions]);
   const openProjectSessions = useMemo(
     () =>
       sessions
-        .filter((session) => !session.inboxAsk && sameProjectPath(session.cwd, sidebarCwd))
+        .filter(
+          (session) =>
+            !session.inboxAsk && sameProjectPath(session.cwd, sidebarCwd),
+        )
         .map((session) =>
           summaryFromSession(session, {
             ...(projectBranches?.current
@@ -4619,12 +4759,33 @@ export default function App({
     setSettingsOpen(false);
     setSearchViewOpen(false);
     setNotesViewOpen(false);
+    setInboxTarget(null);
+    setInboxViewOpen(true);
+  }, []);
+
+  const onOpenLinkedWorkItem = useCallback((item: LinkedWorkItem) => {
+    setFilePickerOpen(false);
+    setSettingsOpen(false);
+    setSearchViewOpen(false);
+    setNotesViewOpen(false);
+    setInboxTarget(item);
     setInboxViewOpen(true);
   }, []);
 
   const onLeaveInbox = useCallback(() => {
     setInboxViewOpen(false);
+    setInboxTarget(null);
   }, []);
+
+  const onOpenInboxSession = useCallback(
+    (sessionId: string) => {
+      setInboxViewOpen(false);
+      setInboxTarget(null);
+      setSidebarTab("sessions");
+      void onSelectHistorySession(sessionId);
+    },
+    [onSelectHistorySession],
+  );
 
   const onOpenNotes = useCallback(() => {
     if (!loadNotesEnabled()) return;
@@ -5180,7 +5341,7 @@ export default function App({
         onDeleteSession={onDeleteHistorySession}
         onDeleteSessions={onDeleteHistorySessions}
         onOpenFile={onOpenFile}
-        onOpenTerminal={(cwd) => onOpenTerminal(cwd)}
+        onOpenTerminal={onOpenTerminal}
         onFileMoved={onFileMoved}
         onFileDeleted={onFileDeleted}
         canGoBack={
@@ -5217,6 +5378,7 @@ export default function App({
         onNewTerminal={onNewTerminal}
         onSearch={onOpenSearch}
         onOpenInbox={onOpenInbox}
+        onOpenInboxItem={onOpenLinkedWorkItem}
         onOpenNotes={notesEnabled ? onOpenNotes : undefined}
         onGoToFile={onGoToFile}
         searchActive={searchViewOpen}
@@ -5415,7 +5577,7 @@ export default function App({
             cwd={sidebarCwd}
             recents={recents}
             history={projectHistory}
-            sessions={sessions.filter(session => !session.inboxAsk)}
+            sessions={sessions.filter((session) => !session.inboxAsk)}
             focusToken={searchViewFocusToken}
             besideRail={projectRailOpen}
             onClose={onLeaveSearch}
@@ -5427,9 +5589,10 @@ export default function App({
         ) : null}
         <div className="hidden" aria-hidden>
           {sessions
-            .filter(session => session.inboxAsk)
-            .map(session => {
-              const visible = inboxViewOpen && inboxAskPortal?.sessionId === session.id;
+            .filter((session) => session.inboxAsk)
+            .map((session) => {
+              const visible =
+                inboxViewOpen && inboxAskPortal?.sessionId === session.id;
               return (
                 <SessionSurface
                   key={session.id}
@@ -5458,6 +5621,9 @@ export default function App({
             onAsk={onAskInboxItem}
             onAskRestart={onRestartInboxAsk}
             onAskMount={setInboxAskPortal}
+            sessions={inboxRelatedSessions}
+            onOpenSession={onOpenInboxSession}
+            target={inboxTarget}
           />
         ) : null}
         {notesViewOpen ? (

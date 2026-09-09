@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.41] - 2026-09-09
+
+### Added
+
+- OMP models support fast mode, including live RPC and configuration updates with a clear fallback when a model does not support it.
+
+### Changed
+
+- The file explorer avoids unnecessary rerenders and preserves unchanged file-icon DOM for smoother updates.
+- The Changes panel header consistently shows its label instead of replacing it with diff counts.
+
+### Fixed
+
+- The sidebar update control stays hidden when no update is available and prevents duplicate installs from concurrent clicks. In #132 by @fobsouza.
+
 ## [0.1.40] - 2026-09-08
 
 ### Added
